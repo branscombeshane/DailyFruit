@@ -224,7 +224,7 @@ function emptyDataShape(){
   // a complete, always-safe starting shape so nothing crashes while the real fetch is in flight
   return {
     salesA: [], salesB: [], itemSetup: [], recipes: [],
-    procurementPlan: {coverMultiplier:1, safetyBuffer:0},
+    procurementPlan: {coverMultiplier:1, safetyBuffer:0, historyWindow:90},
     purchaseCosts: [], baseProductCategories: {},
     stockTakes: [], shoppingList: {criticalPct:0.25, overstockPct:1.5},
     users: [{name:"Owner", pin:"1234", role:"owner"}],
@@ -442,7 +442,16 @@ function itemSetupDerived(){
 // uploads — or backdated historical reports — each land on their own day instead of overwriting one
 // another. This builds up automatically instead of Calculated Holdings relying on whatever single
 // report happens to be loaded right now.
-const DEMAND_HISTORY_WINDOW = 90; // rolling window: most recent N archived days used for the average (~12-13 weeks if uploading daily)
+const DEMAND_HISTORY_WINDOW = 90; // fallback default if the owner hasn't set one (see demandHistoryWindow())
+
+// Owner-adjustable on Calculated Holdings: a shorter window adapts faster to a seasonal turn (fresh
+// produce demand shifts through the year) at the cost of noisier day-to-day recommendations; a longer
+// one smooths things out but takes longer to fully forget an old season's numbers. Falls back to the
+// default above for data saved before this setting existed, or if it's ever cleared/invalid.
+function demandHistoryWindow(){
+  const v = Number(DATA.procurementPlan.historyWindow);
+  return (v && v>0) ? Math.round(v) : DEMAND_HISTORY_WINDOW;
+}
 
 function currentDemandSnapshot(){
   const derived = itemSetupDerived();
@@ -480,7 +489,7 @@ function baseProductDemandHistory(baseProduct){
     .filter(h => h.demand && Object.prototype.hasOwnProperty.call(h.demand, baseProduct))
     .sort((a,b)=> a.date.localeCompare(b.date))
     .map(h=> h.demand[baseProduct]);
-  return points.slice(-DEMAND_HISTORY_WINDOW);
+  return points.slice(-demandHistoryWindow());
 }
 
 function demandStatsFor(baseProduct, currentRawUnits){
@@ -1229,6 +1238,7 @@ function renderDashboard(){
   const tracked = allRows.length;
   const cm = DATA.procurementPlan.coverMultiplier;
   const sb = DATA.procurementPlan.safetyBuffer;
+  const hw = demandHistoryWindow();
   const historyPeriods = DATA.salesHistory.length;
   const critPct = Number(DATA.shoppingList.criticalPct)||0.25;
   const overPct = Number(DATA.shoppingList.overstockPct)||1.5;
@@ -1279,7 +1289,9 @@ function renderDashboard(){
         <div class="formgrid">
           <div class="field"><label>Default cycle length (x avg daily demand)</label><input type="number" step="0.1" id="coverMultiplier" value="${cm}"></div>
           <div class="field"><label>Default safety buffer %</label><input type="number" step="1" id="safetyBufferPct" value="${round2(sb*100)}"></div>
+          <div class="field"><label>Sales history window (days)</label><input type="number" step="1" min="7" id="historyWindowDays" value="${hw}"></div>
         </div>
+        <div class="helptext" style="margin-top:10px;">The history window controls how many of the most recent archived upload-days feed the rolling average and spread behind every recommendation. Shorten it so a seasonal turn shows up faster (at the cost of noisier day-to-day numbers); lengthen it to smooth things out. Currently ${historyPeriods} day${historyPeriods===1?"":"s"} archived in total, so a window past that has no extra effect yet.</div>
       </div>
     </div>
     <div class="card">
@@ -2016,6 +2028,8 @@ function wireTabEvents(){
     document.getElementById("savePlanSettings").addEventListener("click", ()=>{
       DATA.procurementPlan.coverMultiplier = Number(document.getElementById("coverMultiplier").value)||1;
       DATA.procurementPlan.safetyBuffer = (Number(document.getElementById("safetyBufferPct").value)||0)/100;
+      const hwRaw = Number(document.getElementById("historyWindowDays").value);
+      DATA.procurementPlan.historyWindow = (hwRaw>=7) ? Math.round(hwRaw) : 90;
       const critRaw = Number(document.getElementById("shoppingCriticalPct").value);
       const overRaw = Number(document.getElementById("shoppingOverstockPct").value);
       DATA.shoppingList.criticalPct = (critRaw>0 ? critRaw : 25)/100;
