@@ -1,0 +1,2389 @@
+<title>Daily Fruit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --paper:#F6F3EC; --surface:#FFFFFF; --surface-2:#FBF9F4; --ink:#202821; --muted:#6E7266;
+    --line:#E3DFD2; --accent:#3F6C4B; --accent-ink:#FFFFFF; --accent-soft:#E6EEE7;
+    --warn:#B4790E; --warn-soft:#FBF0DC; --critical:#B23A2E; --critical-soft:#FBE6E2;
+    --good:#3F6C4B; --good-soft:#E6EEE7; --shadow: 0 1px 2px rgba(32,40,33,.06), 0 4px 16px rgba(32,40,33,.05);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#14181A; --surface:#1B2022; --surface-2:#20262A; --ink:#E8E9E4; --muted:#9AA394;
+      --line:#2B3230; --accent:#5C9169; --accent-ink:#0E1310; --accent-soft:#22302A;
+      --warn:#D9A441; --warn-soft:#332A16; --critical:#E0685A; --critical-soft:#3A2119;
+      --good:#5C9169; --good-soft:#22302A; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14181A; --surface:#1B2022; --surface-2:#20262A; --ink:#E8E9E4; --muted:#9AA394;
+    --line:#2B3230; --accent:#5C9169; --accent-ink:#0E1310; --accent-soft:#22302A;
+    --warn:#D9A441; --warn-soft:#332A16; --critical:#E0685A; --critical-soft:#3A2119;
+    --good:#5C9169; --good-soft:#22302A; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  }
+  .num{font-family:"IBM Plex Mono", ui-monospace, monospace; font-variant-numeric:tabular-nums; font-feature-settings:"tnum";}
+  h1,h2,h3{font-family:"Fraunces", Georgia, serif; font-weight:600; text-wrap:balance; margin:0;}
+  a{color:var(--accent);}
+  button, input, select, textarea{font-family:inherit; font-size:inherit; color:inherit;}
+  button{cursor:pointer;}
+  ::selection{background:var(--accent-soft);}
+
+  .app{display:flex; min-height:100vh;}
+  .sidebar{
+    width:216px; flex:none; background:var(--surface); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; position:sticky; top:0; height:100vh;
+  }
+  .brand{padding:20px 18px 14px; border-bottom:1px solid var(--line);}
+  .brand .mark{width:30px;height:30px;border-radius:7px;background:var(--accent);color:var(--accent-ink);
+    display:flex;align-items:center;justify-content:center;font-family:"Fraunces",serif;font-weight:600;font-size:16px;margin-bottom:9px;}
+  .brand h1{font-size:17px; letter-spacing:.01em;}
+  .brand .sub{font-size:11px; color:var(--muted); margin-top:2px; text-transform:uppercase; letter-spacing:.06em;}
+  nav{padding:10px; flex:1; overflow-y:auto;}
+  .navbtn{
+    display:flex; align-items:center; gap:10px; width:100%; text-align:left; padding:9px 11px; border-radius:8px;
+    border:none; background:transparent; color:var(--muted); font-size:13px; font-weight:500; margin-bottom:2px;
+  }
+  .navbtn .dot{width:6px;height:6px;border-radius:50%;background:var(--line);flex:none;}
+  .navbtn:hover{background:var(--surface-2); color:var(--ink);}
+  .navbtn.active{background:var(--accent-soft); color:var(--accent);}
+  .navbtn.active .dot{background:var(--accent);}
+  .navgroup{margin-bottom:14px;}
+  .navgroup:last-child{margin-bottom:0;}
+  .navgrouplabel{font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:600; padding:8px 11px 4px;}
+  .navfoot{padding:12px 14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted);}
+  .synctag{display:inline-flex;align-items:center;gap:5px;}
+  .synctag .pulse{width:6px;height:6px;border-radius:50%;background:var(--good);}
+
+  .main{flex:1; min-width:0; padding:26px 32px 60px; max-width:1320px;}
+  .pagehead{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:18px; flex-wrap:wrap;}
+  .pagehead h2{font-size:24px;}
+  .pagehead p{margin:4px 0 0; color:var(--muted); max-width:60ch; font-size:13px;}
+  .actions{display:flex; gap:8px; flex-wrap:wrap;}
+
+  .btn{
+    display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:7px; border:1px solid var(--line);
+    background:var(--surface); font-size:13px; font-weight:500; color:var(--ink);
+  }
+  .btn:hover{border-color:var(--muted);}
+  .btn:focus-visible, .navbtn:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible{
+    outline:2px solid var(--accent); outline-offset:1px;
+  }
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink);}
+  .btn.primary:hover{filter:brightness(1.06);}
+  .btn.ghost{border-color:transparent; background:transparent;}
+  .btn.small{padding:5px 10px; font-size:12px;}
+  .btn:disabled{opacity:.5; cursor:not-allowed;}
+
+  .cardrow{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:20px;}
+  .stat{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:14px 16px; box-shadow:var(--shadow);}
+  .stat .label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:6px;}
+  .stat .value{font-size:22px; font-weight:600; font-family:"IBM Plex Mono",monospace;}
+  .stat .value.small{font-size:15px; font-family:"IBM Plex Sans",sans-serif; font-weight:600;}
+
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); margin-bottom:22px;}
+  .card .cardhead{padding:14px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;}
+  .card .cardhead h3{font-size:15px;}
+  .card .cardhead .desc{font-size:12px; color:var(--muted); margin-top:2px;}
+  .card .cardbody{padding:16px 18px;}
+
+  .field{display:flex; flex-direction:column; gap:4px;}
+  .field label{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);}
+  input[type=text], input[type=number], input[type=date], select, textarea{
+    padding:7px 9px; border-radius:6px; border:1px solid var(--line); background:var(--surface-2); color:var(--ink); width:100%;
+  }
+  textarea{font-family:"IBM Plex Mono",monospace; font-size:12px; min-height:160px; resize:vertical;}
+  .searchbar{display:flex; align-items:center; gap:8px; background:var(--surface-2); border:1px solid var(--line); border-radius:7px; padding:6px 10px; min-width:220px;}
+  .searchbar input{border:none; background:transparent; padding:2px 0;}
+  .searchbar input:focus-visible{outline:none;}
+
+  .tablewrap{overflow-x:auto; border:1px solid var(--line); border-radius:10px;}
+  table{border-collapse:collapse; width:100%; font-size:13px;}
+  thead th{
+    position:sticky; top:0; background:var(--surface-2); text-align:left; font-size:11px; text-transform:uppercase;
+    letter-spacing:.05em; color:var(--muted); padding:9px 12px; border-bottom:1px solid var(--line); white-space:nowrap;
+  }
+  tbody td{padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:middle;}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:var(--surface-2);}
+  td.num, th.num{text-align:right; font-family:"IBM Plex Mono",monospace;}
+  .rowinput{width:100%; min-width:90px; padding:5px 7px; font-size:12.5px; border-radius:5px; border:1px solid var(--line); background:var(--surface);}
+  .rowinput:focus-visible{outline:2px solid var(--accent);}
+
+  .chip{display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:99px; font-size:11.5px; font-weight:600; white-space:nowrap;}
+  .chip.good{background:var(--good-soft); color:var(--good);}
+  .chip.warn{background:var(--warn-soft); color:var(--warn);}
+  .chip.critical{background:var(--critical-soft); color:var(--critical);}
+  .chip.neutral{background:var(--surface-2); color:var(--muted); border:1px solid var(--line);}
+
+  .banner{display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:9px; font-size:13px; margin-bottom:16px;}
+  .banner.info{background:var(--accent-soft); color:var(--accent);}
+  .banner.warn{background:var(--warn-soft); color:var(--warn);}
+
+  .formgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; align-items:end;}
+  .empty{padding:30px 10px; text-align:center; color:var(--muted); font-size:13px;}
+  .helptext{font-size:12px; color:var(--muted); line-height:1.6;}
+  .kbd{font-family:"IBM Plex Mono",monospace; background:var(--surface-2); border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:11px;}
+  .tabsec{display:none;}
+  .tabsec.active{display:block;}
+  .toast{
+    position:fixed; bottom:20px; right:20px; background:var(--ink); color:var(--paper); padding:10px 16px; border-radius:8px;
+    font-size:13px; box-shadow:var(--shadow); opacity:0; transform:translateY(8px); transition:opacity .2s, transform .2s; pointer-events:none; z-index:50;
+  }
+  .toast.show{opacity:1; transform:translateY(0);}
+  .delbtn{border:none;background:transparent;color:var(--critical);font-size:15px;padding:2px 6px;border-radius:5px;}
+  .delbtn:hover{background:var(--critical-soft);}
+  .dropzone{
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    border:1.5px dashed var(--line); border-radius:10px; padding:26px 16px; text-align:center;
+    background:var(--surface-2); cursor:pointer; transition:border-color .15s, background .15s;
+  }
+  .dropzone:hover, .dropzone.dragover{border-color:var(--accent); background:var(--accent-soft);}
+  .dropzone .dztitle{font-size:13px; font-weight:600; color:var(--ink);}
+  .dropzone .dzsub{font-size:12px; color:var(--muted); margin-top:3px;}
+  .dropzone input[type=file]{display:none;}
+
+  .quickbuylist{display:flex; flex-direction:column; gap:8px; max-height:60vh; overflow-y:auto;}
+  .quickbuyitem{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; text-align:left;
+    padding:14px 14px; border-radius:10px; border:1px solid var(--line); background:var(--surface-2);
+  }
+  .quickbuyitem:hover{border-color:var(--muted);}
+  .quickbuyitem .qb-name{font-size:15px; font-weight:600;}
+  .quickbuyitem .qb-meta{display:flex; align-items:center; gap:8px; flex:none;}
+  .quickbuylogrow{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0;
+    border-bottom:1px solid var(--line); font-size:13.5px;
+  }
+  .quickbuylogrow:last-child{border-bottom:none;}
+
+  .loginwrap{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;}
+  .loginbox{width:100%; max-width:340px; background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); padding:28px 24px; text-align:center;}
+  .loginmark{width:44px;height:44px;border-radius:10px;background:var(--accent);color:var(--accent-ink);
+    display:flex;align-items:center;justify-content:center;font-family:"Fraunces",serif;font-weight:600;font-size:20px;margin:0 auto 14px;}
+  .loginbox h2{font-size:20px; margin-bottom:4px;}
+  .loginbox input{text-align:center;}
+  @media (prefers-reduced-motion: reduce){ .toast{transition:none;} }
+  @media (max-width: 860px){
+    .app{flex-direction:column;}
+    .sidebar{width:100%; height:auto; position:relative; flex-direction:row; overflow-x:auto;}
+    .brand{display:none;}
+    nav{display:flex; padding:8px;}
+    .navbtn{white-space:nowrap;}
+    .main{padding:18px;}
+  }
+</style>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="mark">CL</div>
+      <h1>Daily Fruit</h1>
+      <div class="sub">Procurement &amp; costing</div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="navfoot" id="navFootArea">
+      <span class="synctag"><span class="pulse"></span> <span id="syncstate">Synced</span></span>
+    </div>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+// Where the shared data actually lives now: a Google Apps Script Web App backed by a Google
+// Sheet (see the setup docs shipped alongside this file). Every device that opens this page
+// fetches fresh data from here on load, and every save posts the full current state back here —
+// there's no more data baked into this HTML file itself, so this file basically never needs to
+// be rebuilt just because the data changed.
+const API_URL = "https://script.google.com/macros/s/AKfycbxhLGSHqhvY3XKZFyj7f0hL3yQVEzkL8bB4l33YiwQ2h-2exQ5siR6INPiL79iUY7RZ8Q/exec";
+
+function emptyDataShape(){
+  // a complete, always-safe starting shape so nothing crashes while the real fetch is in flight
+  return {
+    salesA: [], salesB: [], itemSetup: [], recipes: [],
+    procurementPlan: {coverMultiplier:1, safetyBuffer:0},
+    purchaseCosts: [], baseProductCategories: {},
+    stockTakes: [], shoppingList: {criticalPct:0.25, overstockPct:1.5},
+    users: [{name:"Owner", pin:"1234", role:"owner"}],
+    purchaseIssues: [], salesHistory: [],
+    categoryBuffers: {}, productCycles: {}, productCeilings: {},
+  };
+}
+
+function applyDataDefaults(d){
+  // fills in anything an older backup (or an older version of the backend sheet) might be
+  // missing, so restoring/loading data from before a given feature existed never crashes
+  if(!d.stockTakes) d.stockTakes = []; // backward-compatible default for backups predating Stock Take history
+  if(!d.shoppingList) d.shoppingList = {criticalPct:0.25, overstockPct:1.5}; // backward-compatible default for backups predating the Shopping List
+  if(d.stockLevels){
+    // migrate the earlier undated "current levels only" shape into a dated archive entry, then drop it
+    const migrationDate = new Date().toISOString().slice(0,10);
+    Object.keys(d.stockLevels).forEach(bp=>{
+      const val = d.stockLevels[bp];
+      if(val!==null && val!==undefined && val!=="" && !d.stockTakes.some(r=>r.date===migrationDate && r.baseProduct===bp)){
+        d.stockTakes.push({date:migrationDate, baseProduct:bp, amount:Number(val)});
+      }
+    });
+    delete d.stockLevels;
+  }
+  if(Array.isArray(d.itemSetup)){
+    // one-time correction: earlier builds appended new items (from sales uploads / manual add)
+    // to the end of the list instead of keeping it alphabetical — re-sort once on load, then
+    // addItemRow / submitSalesUpload keep it sorted going forward.
+    d.itemSetup.sort((a,b)=> (a.item||"").localeCompare(b.item||""));
+  }
+  if(!d.purchaseIssues) d.purchaseIssues = []; // backward-compatible default for backups predating "Unable to purchase" reasons
+  if(!d.salesHistory) d.salesHistory = []; // backward-compatible default for backups predating automatic sales history archiving
+  if(!d.categoryBuffers) d.categoryBuffers = {}; // backward-compatible default: per-category safety buffer % overrides (falls back to the global safety buffer when unset)
+  if(!d.productCycles) d.productCycles = {}; // backward-compatible default: per-product replenishment cycle length overrides (falls back to the global cover multiplier when unset)
+  if(!d.productCeilings) d.productCeilings = {}; // backward-compatible default: per-product shelf-life hold ceilings (no cap when unset)
+  if(!d.users || !d.users.length){
+    // backward-compatible default for backups predating login — logs in as name "Owner", PIN 1234.
+    // Change this immediately from the Users tab once logged in.
+    d.users = [{name:"Owner", pin:"1234", role:"owner"}];
+  }
+  return d;
+}
+
+function browserDownload(filename, dataStr, mime){
+  const blob = new Blob([dataStr], {type: mime || "application/octet-stream"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=> URL.revokeObjectURL(url), 1000);
+}
+
+let DATA = emptyDataShape();
+let dataLoaded = false;
+let dataLoadError = null;
+// tentatively restored here (before real data has loaded); boot() re-validates it against the
+// real DATA.users once the fetch completes, since the empty starting shape above can't tell
+// whether this session's user still exists or still has the same role
+let currentUser = null;
+try{
+  const savedUser = sessionStorage.getItem("dailyFruitUser");
+  if(savedUser){
+    const parsed = JSON.parse(savedUser);
+    if(parsed && parsed.name && parsed.role) currentUser = parsed;
+  }
+}catch(e){ /* storage unavailable */ }
+let loginSelectedUser = null;
+let loginError = "";
+let currentTab = "dashboard";
+try{
+  const savedTab = localStorage.getItem("dailyFruitCurrentTab");
+  if(savedTab) currentTab = savedTab;
+}catch(e){ /* storage unavailable in this preview — fall back to default tab */ }
+function setCurrentTab(tabId){
+  currentTab = tabId;
+  try{ localStorage.setItem("dailyFruitCurrentTab", tabId); }catch(e){}
+}
+let itemSearch = "";
+let dashboardCategoryFilter = "";
+let salesUploadDate = new Date().toISOString().slice(0,10); // date the Item Sales upload covers — defaults to today, change it to backdate historical reports into the sales history archive
+let salesPendingA = null; // {filename, rows} staged Pyroca file for the current report date, awaiting Submit
+let salesPendingB = null; // {filename, rows} staged DF Veg file for the current report date, awaiting Submit
+let sageDateFilter = new Date().toISOString().slice(0,10);
+let sageOnlyPurchasedOnDate = true;
+let purchaseDraftDate = "";
+let purchaseDraftLines = [];
+let purchaseDateFilter = "";
+let stockCategoryFilter = "";
+let stockTakeDate = new Date().toISOString().slice(0,10);
+let stockArchiveDateFilter = "";
+let shoppingCategoryFilter = "";
+let shoppingStatusFilter = "";
+let shoppingBuyEditing = new Set(); // baseProducts currently showing the inline buy-entry inputs instead of the "bought today" badge
+let quickBuySearch = "";
+let quickBuyCategoryFilter = "";
+let quickBuySelected = null; // baseProduct currently open in the Quick Buy entry screen, or null for the search/pick list
+let quickBuyMode = "buy"; // "buy" (qty + price form) or "unable" (reason form) for the currently selected product
+
+const NAV = [
+  {group:"Shopping List", items:[
+    {id:"shoppinglist", label:"Shopping List"},
+    {id:"quickbuy", label:"Quick Buy"},
+  ]},
+  {group:"Holding Numbers", items:[
+    {id:"dashboard", label:"Calculated Holdings"},
+    {id:"salesdata", label:"Item Sales"},
+  ]},
+  {group:"Product Setup", items:[
+    {id:"itemsetup", label:"Item Setup"},
+    {id:"recipes", label:"Product Mixes"},
+  ]},
+  {group:"Costings", items:[
+    {id:"purchase", label:"Purchase Costs"},
+    {id:"sageimport", label:"Sage CSV"},
+  ]},
+  {group:"Stock Take", items:[
+    {id:"stocktake", label:"Input Stock Levels"},
+  ]},
+  {group:"Admin", items:[
+    {id:"users", label:"Users"},
+    {id:"backup", label:"Backup & Restore"},
+  ]},
+];
+const TABS = NAV.flatMap(section=>section.items);
+if(!TABS.some(t=>t.id===currentTab)){
+  // handles a tab id saved before a menu reorganisation (e.g. the removed Sage Master tab)
+  currentTab = "dashboard";
+  try{ localStorage.setItem("dailyFruitCurrentTab", currentTab); }catch(e){}
+}
+
+// who can see which tab. Owner: everything. Procurement: the day-to-day buying workflow.
+// Stock Taker: just counting stock (their Shopping List view is further restricted to read-only inside renderShoppingList/renderBuyCell).
+const ROLE_TABS = {
+  owner: ["shoppinglist","quickbuy","dashboard","salesdata","itemsetup","recipes","purchase","sageimport","stocktake","users","backup"],
+  procurement: ["shoppinglist","quickbuy","purchase","stocktake"],
+  stocktaker: ["shoppinglist","stocktake"],
+};
+function roleCanAccessTab(role, tabId){
+  return (ROLE_TABS[role]||[]).includes(tabId);
+}
+function canManagePurchases(){
+  return !!currentUser && (currentUser.role==="owner" || currentUser.role==="procurement");
+}
+
+function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function fmtNum(n, d){ if(n===null||n===undefined||n==="") return ""; d = d===undefined?2:d; return Number(n).toLocaleString(undefined,{minimumFractionDigits:d, maximumFractionDigits:d}); }
+function money(n){ return n===null||n===undefined||n==="" ? "" : "R"+fmtNum(n,2); }
+
+// ---------- parsing helpers (mirrors the workbook's "CODE - Description - UNIT" convention) ----------
+function parseItem(item){
+  const parts = item.split(" - ").map(p=>p.trim());
+  if(parts.length >= 3){
+    return {code:parts[0], description:parts.slice(1,-1).join(" - "), unit:parts[parts.length-1]};
+  } else if(parts.length === 2){
+    return {code:parts[0], description:parts[1], unit:""};
+  }
+  return {code:item, description:"", unit:""};
+}
+
+// ---------- derived computations (mirror the spreadsheet formulas) ----------
+function combinedSalesMap(){
+  const map = {};
+  for(const row of [...DATA.salesA, ...DATA.salesB]){
+    if(!row.item) continue;
+    if(!map[row.item]) map[row.item] = {qty:0, cost:0, selling:0};
+    map[row.item].qty += Number(row.qty)||0;
+    map[row.item].cost += Number(row.cost)||0;
+    map[row.item].selling += Number(row.selling)||0;
+  }
+  return map;
+}
+
+function recipeDrivenMap(combined){
+  const map = {};
+  for(const rec of DATA.recipes){
+    if(!rec.compositeItem || !rec.ingredientItem) continue;
+    const compQty = (combined[rec.compositeItem]||{}).qty || 0;
+    const factor = (rec.percent !== null && rec.percent !== undefined && rec.percent !== "") ? Number(rec.percent) : (Number(rec.fixedQty)||0);
+    map[rec.ingredientItem] = (map[rec.ingredientItem]||0) + compQty*factor;
+  }
+  return map;
+}
+
+function recipeCompositeTotals(){
+  const totals = {};
+  for(const rec of DATA.recipes){
+    if(!rec.compositeItem) continue;
+    if(rec.percent !== null && rec.percent !== undefined && rec.percent !== ""){
+      totals[rec.compositeItem] = (totals[rec.compositeItem]||0) + Number(rec.percent);
+    }
+  }
+  return totals;
+}
+
+function itemSetupDerived(){
+  const combined = combinedSalesMap();
+  const recipeDriven = recipeDrivenMap(combined);
+  return DATA.itemSetup.map(it=>{
+    const c = combined[it.item] || {qty:0,cost:0,selling:0};
+    const recQty = recipeDriven[it.item] || 0;
+    const conv = (it.conversionFactor===""||it.conversionFactor===null||it.conversionFactor===undefined) ? null : Number(it.conversionFactor);
+    const rawNeeded = (conv && conv!==0) ? (c.qty+recQty)/conv : null;
+    return Object.assign({}, it, {combinedQty:c.qty, combinedCost:c.cost, combinedSelling:c.selling, recipeQty:recQty, rawNeeded});
+  });
+}
+
+// ---------- Sales history (multi-day demand archive) ----------
+// Every time a sales CSV is ingested (from either company — Pyroca or DF Veg) we archive a dated
+// snapshot of per-base-product demand (in procurement units, using whatever conversion factors were
+// set up at the time), tagged with the date it was uploaded for (see salesUploadDate) so daily
+// uploads — or backdated historical reports — each land on their own day instead of overwriting one
+// another. This builds up automatically instead of Calculated Holdings relying on whatever single
+// report happens to be loaded right now.
+const DEMAND_HISTORY_WINDOW = 90; // rolling window: most recent N archived days used for the average (~12-13 weeks if uploading daily)
+
+function currentDemandSnapshot(){
+  const derived = itemSetupDerived();
+  const byBase = {};
+  for(const it of derived){
+    if(!it.baseProduct) continue;
+    (byBase[it.baseProduct] = byBase[it.baseProduct]||[]).push(it);
+  }
+  const snap = {};
+  for(const baseProduct of Object.keys(byBase)){
+    const matches = byBase[baseProduct];
+    const hasRaw = matches.some(it=>it.rawNeeded!==null);
+    if(!hasRaw) continue; // skip products that don't have a usable conversion factor yet — don't record a misleading 0
+    // floor at 0: a heavy-return/credit-note day can make raw sales minus returns net negative for a
+    // product, but "demand" can never be meaningfully negative — letting a negative value into the
+    // history would drag the mean+stdev estimate down and risk understocking, the opposite of the point
+    snap[baseProduct] = Math.max(0, matches.reduce((s,it)=> s + (it.rawNeeded||0), 0));
+  }
+  return snap;
+}
+
+function archiveSalesSnapshot(forDate){
+  // one archived entry per tagged date: uploading Pyroca then DF Veg for the same date
+  // refreshes that date's entry (using the latest combined view) rather than double-counting it.
+  // Pass a past date (via salesUploadDate) to backdate a historical report into the archive.
+  const date = forDate || new Date().toISOString().slice(0,10);
+  const demand = currentDemandSnapshot();
+  const existing = DATA.salesHistory.find(h=>h.date===date);
+  if(existing){ existing.demand = demand; }
+  else { DATA.salesHistory.push({date, demand}); }
+}
+
+function baseProductDemandHistory(baseProduct){
+  const points = DATA.salesHistory
+    .filter(h => h.demand && Object.prototype.hasOwnProperty.call(h.demand, baseProduct))
+    .sort((a,b)=> a.date.localeCompare(b.date))
+    .map(h=> h.demand[baseProduct]);
+  return points.slice(-DEMAND_HISTORY_WINDOW);
+}
+
+function demandStatsFor(baseProduct, currentRawUnits){
+  const hist = baseProductDemandHistory(baseProduct);
+  // fall back to the single current-period figure when there's no archived history yet
+  // (e.g. right after upgrading, before any upload has been archived).
+  const values = hist.length ? hist : (currentRawUnits!==null && currentRawUnits!==undefined ? [currentRawUnits] : []);
+  const n = values.length;
+  if(!n) return {avg:null, stdev:0, periods:0};
+  const avg = values.reduce((s,v)=>s+v,0)/n;
+  const variance = n>1 ? values.reduce((s,v)=> s+Math.pow(v-avg,2),0)/(n-1) : 0;
+  return {avg, stdev:Math.sqrt(variance), periods:n};
+}
+
+// Category safety buffer: owner-set per category, falling back to the global safety buffer when unset.
+function categoryBufferFor(categoryKey){
+  const key = categoryKey || "Uncategorized";
+  const v = DATA.categoryBuffers ? DATA.categoryBuffers[key] : undefined;
+  if(v!==undefined && v!==null && v!=="") return Number(v);
+  return Number(DATA.procurementPlan.safetyBuffer)||0;
+}
+// Replenishment cycle length (in archived periods) for a product: how many periods of cover to hold
+// before the next restock. Falls back to the global cover multiplier when a product has no override,
+// since cycle length varies product to product (some restock weekly, some twice a week).
+function cycleFor(baseProduct){
+  const v = DATA.productCycles ? DATA.productCycles[baseProduct] : undefined;
+  if(v!==undefined && v!==null && v!=="") return Number(v);
+  return Number(DATA.procurementPlan.coverMultiplier)||1;
+}
+// Optional shelf-life ceiling: a hard cap on the recommended hold quantity so a statistically-driven
+// buffer never recommends more than the product can safely hold before it spoils.
+function ceilingFor(baseProduct){
+  const v = DATA.productCeilings ? DATA.productCeilings[baseProduct] : undefined;
+  return (v===undefined||v===null||v==="") ? null : Number(v);
+}
+
+function procurementPlanComputed(){
+  const derived = itemSetupDerived();
+  const byBase = {};
+  for(const it of derived){
+    if(!it.baseProduct) continue;
+    (byBase[it.baseProduct] = byBase[it.baseProduct]||[]).push(it);
+  }
+  // auto-populated: every base product that exists in Item Setup, always — nothing to add/remove manually
+  return distinctBaseProducts().map(baseProduct=>{
+    const matches = byBase[baseProduct] || [];
+    const rawUnits = Math.max(0, matches.reduce((s,it)=> s + (it.rawNeeded||0), 0)); // floor: see currentDemandSnapshot
+    const hasRaw = matches.some(it=>it.rawNeeded!==null);
+    const category = categoryFor(baseProduct);
+    const categoryKey = category || "Uncategorized";
+    const stats = demandStatsFor(baseProduct, hasRaw ? rawUnits : null);
+    const cm = cycleFor(baseProduct);
+    const sb = categoryBufferFor(categoryKey);
+    // demand estimate = average per-period demand + one standard deviation of spread across recent
+    // periods, so irregular/inconsistent ordering automatically earns a bigger cushion than steady demand does.
+    const demandEstimate = stats.avg===null ? null : (stats.avg + stats.stdev);
+    let recommended = (demandEstimate!==null) ? Math.ceil(demandEstimate*cm*(1+sb)) : null;
+    const ceiling = ceilingFor(baseProduct);
+    const cappedByCeiling = (recommended!==null && ceiling!==null && recommended>ceiling);
+    if(cappedByCeiling) recommended = ceiling;
+    const units = Array.from(new Set(matches.map(it=>it.procurementUnit).filter(Boolean)));
+    const procUnit = units[0] || "";
+    const consistency = units.length > 1 ? "Check units differ" : "OK";
+    const missing = matches.some(it => ((it.combinedQty>0 || it.recipeQty>0) && !it.conversionFactor)) ? "Missing conversion factor" : "OK";
+    return {baseProduct, rawUnits, recommended, procUnit, consistency, missing, itemCount:matches.length, category,
+      historyPeriods:stats.periods, avgDemand:stats.avg, demandStdev:stats.stdev, cycleUsed:cm, bufferUsed:sb,
+      ceiling, cappedByCeiling};
+  });
+}
+
+function latestStockTakeMap(){
+  // most recent stock take entry per base product — ISO (YYYY-MM-DD) dates sort lexicographically,
+  // so a plain string comparison is enough to find the latest one.
+  const map = {};
+  for(const r of DATA.stockTakes){
+    if(!r.baseProduct) continue;
+    if(!map[r.baseProduct] || r.date > map[r.baseProduct].date){
+      map[r.baseProduct] = {amount:Number(r.amount), date:r.date};
+    }
+  }
+  return map;
+}
+
+const SHOPPING_STATUS_ORDER = {"Critical":0, "Buy":1, "No stock take":2, "Missing setup":3, "Overstocked":4, "OK":5};
+
+function shoppingListComputed(){
+  // compares each base product's most recent stock take against its Calculated Holdings target
+  const plan = procurementPlanComputed();
+  const stockMap = latestStockTakeMap();
+  const critPct = Number(DATA.shoppingList.criticalPct)||0.25;
+  const overPct = Number(DATA.shoppingList.overstockPct)||1.5;
+  const rows = plan.map(row=>{
+    const stockEntry = stockMap[row.baseProduct] || null;
+    const currentStock = stockEntry ? stockEntry.amount : null;
+    const stockDate = stockEntry ? stockEntry.date : null;
+    const recommended = row.recommended;
+    let status, toBuy = null, ratio = null;
+    if(recommended === null){
+      status = "Missing setup"; // no computable holding target yet (e.g. missing conversion factor)
+    } else if(recommended === 0){
+      status = (currentStock!==null && currentStock>0) ? "Overstocked" : "OK"; // no demand right now
+    } else if(currentStock === null){
+      status = "No stock take"; // can't compare without a count
+    } else {
+      ratio = currentStock / recommended;
+      if(ratio <= critPct) status = "Critical";
+      else if(ratio < 1) status = "Buy";
+      else if(ratio >= overPct) status = "Overstocked";
+      else status = "OK";
+      toBuy = Math.max(0, Math.ceil(recommended - currentStock));
+    }
+    return Object.assign({}, row, {currentStock, stockDate, status, toBuy, ratio});
+  });
+  // most urgent first (Critical, Buy, then data-quality issues, then Overstocked, then OK), alphabetical within each
+  rows.sort((a,b)=>{
+    const oa = SHOPPING_STATUS_ORDER[a.status]!==undefined ? SHOPPING_STATUS_ORDER[a.status] : 9;
+    const ob = SHOPPING_STATUS_ORDER[b.status]!==undefined ? SHOPPING_STATUS_ORDER[b.status] : 9;
+    if(oa !== ob) return oa-ob;
+    return a.baseProduct.localeCompare(b.baseProduct);
+  });
+  return rows;
+}
+
+function purchaseCostMap(date){
+  // first entry wins per Base Product, mirrors the workbook's MATCH() behaviour.
+  // pass a date (YYYY-MM-DD) to scope to purchases logged on that exact date only;
+  // omit it to fall back to the first-ever logged cost per base product, any date.
+  const map = {};
+  for(const p of DATA.purchaseCosts){
+    if(date && p.date !== date) continue;
+    if(p.baseProduct && !(p.baseProduct in map)) map[p.baseProduct] = Number(p.cost);
+  }
+  return map;
+}
+
+function purchaseEntryForDate(baseProduct, date){
+  // first entry wins per (date, baseProduct), mirrors purchaseCostMap's MATCH() behaviour
+  return DATA.purchaseCosts.find(p=> p.baseProduct===baseProduct && p.date===date) || null;
+}
+
+function unableEntryForDate(baseProduct, date){
+  return DATA.purchaseIssues.find(p=> p.baseProduct===baseProduct && p.date===date) || null;
+}
+
+function sageImportComputed(date){
+  const derived = itemSetupDerived();
+  const pm = purchaseCostMap(date);
+  return derived.map(it=>{
+    let newCost = null;
+    if(it.baseProduct && it.baseProduct in pm && it.conversionFactor){
+      newCost = round2(pm[it.baseProduct]/Number(it.conversionFactor));
+    }
+    return {
+      itemCode: it.itemCode, averageCost: newCost,
+      quantityOnHand: 0,
+      item: it.item, baseProduct: it.baseProduct, purchasedOnDate: newCost !== null,
+    };
+  });
+}
+
+// ---------- persistence ----------
+// Fetches the full shared state from the backend. Uses text/plain-free plain GET (no custom
+// headers) so this never triggers a CORS preflight against the Apps Script endpoint.
+async function loadData(){
+  if(!API_URL || API_URL.indexOf("__")===0){
+    throw new Error("This copy of the app has no data source configured yet.");
+  }
+  const res = await fetch(API_URL, {cache: "no-store"});
+  if(!res.ok) throw new Error("Server returned " + res.status);
+  const fresh = await res.json();
+  return applyDataDefaults(fresh);
+}
+
+async function persist(successMsg){
+  try{
+    // Content-Type: text/plain keeps this a CORS "simple request" — Apps Script Web Apps don't
+    // handle the OPTIONS preflight a real "application/json" content-type would trigger. The
+    // backend parses the body as JSON regardless of the header (see Code.gs's doPost).
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: {"Content-Type": "text/plain;charset=utf-8"},
+      body: JSON.stringify(DATA),
+    });
+    let result = null;
+    try{ result = await res.json(); }catch(e){ /* fall through to the failure toast below */ }
+    if(res.ok && result && result.ok){
+      toast(successMsg || "Saved");
+    } else {
+      toast("Could not save" + (result && result.error ? (": " + result.error) : "") + " — check your connection and try again");
+    }
+  }catch(e){
+    toast("Could not save — check your connection and try again");
+  }
+  render();
+}
+
+function toast(msg){
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>el.classList.remove("show"), 2600);
+}
+
+// ---------- render shell ----------
+function renderNav(){
+  const nav = document.getElementById("nav");
+  if(!currentUser){ nav.innerHTML = ""; }
+  else {
+    nav.innerHTML = NAV.map(section=>{
+      const items = section.items.filter(t=> roleCanAccessTab(currentUser.role, t.id));
+      if(!items.length) return "";
+      const itemsHtml = items.map(t=>
+        `<button class="navbtn ${t.id===currentTab?'active':''}" data-tab="${t.id}"><span class="dot"></span>${esc(t.label)}</button>`
+      ).join("");
+      const labelHtml = section.group ? `<div class="navgrouplabel">${esc(section.group)}</div>` : "";
+      return `<div class="navgroup">${labelHtml}${itemsHtml}</div>`;
+    }).join("");
+    nav.querySelectorAll(".navbtn").forEach(b=> b.addEventListener("click", ()=>{ setCurrentTab(b.dataset.tab); render(); }));
+  }
+
+  const footArea = document.getElementById("navFootArea");
+  if(footArea){
+    if(currentUser){
+      footArea.innerHTML = `
+        <span class="synctag"><span class="pulse"></span> <span id="syncstate">Synced</span></span>
+        <div style="margin-top:10px;">
+          <div style="font-weight:600;color:var(--ink);">${esc(currentUser.name)}</div>
+          <div style="text-transform:capitalize;margin-bottom:6px;">${esc(currentUser.role)}</div>
+          <button class="btn small" id="logoutBtn" style="width:100%;">Switch user</button>
+        </div>`;
+      const btn = document.getElementById("logoutBtn");
+      if(btn) btn.addEventListener("click", ()=>{
+        currentUser = null;
+        try{ sessionStorage.removeItem("dailyFruitUser"); }catch(e){}
+        render();
+      });
+    } else {
+      footArea.innerHTML = `<span class="synctag"><span class="pulse"></span> <span id="syncstate">Synced</span></span>`;
+    }
+  }
+}
+
+function wireLoginEvents(){
+  if(!loginSelectedUser){
+    document.querySelectorAll("[data-login-pick]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        loginSelectedUser = b.dataset.loginPick;
+        loginError = "";
+        render();
+      });
+    });
+  } else {
+    const backBtn = document.getElementById("loginBack");
+    if(backBtn) backBtn.addEventListener("click", ()=>{
+      loginSelectedUser = null;
+      loginError = "";
+      render();
+    });
+    const doLogin = ()=>{
+      const pinEl = document.getElementById("loginPin");
+      const pin = pinEl ? pinEl.value : "";
+      const u = (DATA.users||[]).find(x=>x.name===loginSelectedUser);
+      if(u && String(u.pin)===String(pin)){
+        currentUser = {name:u.name, role:u.role};
+        try{ sessionStorage.setItem("dailyFruitUser", JSON.stringify(currentUser)); }catch(e){}
+        loginSelectedUser = null;
+        loginError = "";
+        render();
+      } else {
+        loginError = "Incorrect PIN";
+        render();
+      }
+    };
+    const submitBtn = document.getElementById("loginSubmit");
+    if(submitBtn) submitBtn.addEventListener("click", doLogin);
+    const pinEl = document.getElementById("loginPin");
+    if(pinEl) pinEl.addEventListener("keydown", (e)=>{ if(e.key==="Enter") doLogin(); });
+  }
+}
+
+function render(){
+  // preserve focus + cursor position across the full innerHTML rebuild below, so typing into a
+  // live-filtered search box (Item Setup search, Quick Buy search) doesn't drop focus after each keystroke
+  const activeEl = document.activeElement;
+  const activeId = (activeEl && activeEl.id) ? activeEl.id : null;
+  const hasSelectionApi = activeId && typeof activeEl.selectionStart === "number";
+  const selStart = hasSelectionApi ? activeEl.selectionStart : null;
+  const selEnd = hasSelectionApi ? activeEl.selectionEnd : null;
+
+  const sidebar = document.querySelector(".sidebar");
+  if(!dataLoaded){
+    if(sidebar) sidebar.style.display = "none";
+    renderNav();
+    const main = document.getElementById("main");
+    main.innerHTML = dataLoadError ? renderLoadError(dataLoadError) : renderLoading();
+    const retryBtn = document.getElementById("retryLoadBtn");
+    if(retryBtn) retryBtn.addEventListener("click", ()=>{ dataLoadError = null; render(); boot(); });
+    return;
+  }
+  if(!currentUser){
+    if(sidebar) sidebar.style.display = "none";
+    renderNav();
+    const main = document.getElementById("main");
+    main.innerHTML = renderLogin();
+    wireLoginEvents();
+  } else {
+    if(sidebar) sidebar.style.display = "";
+    if(!roleCanAccessTab(currentUser.role, currentTab)){
+      const firstAllowed = TABS.find(t=> roleCanAccessTab(currentUser.role, t.id));
+      if(firstAllowed) setCurrentTab(firstAllowed.id);
+    }
+    renderNav();
+    const main = document.getElementById("main");
+    if(currentTab==="shoppinglist") main.innerHTML = renderShoppingList();
+    else if(currentTab==="quickbuy") main.innerHTML = renderQuickBuy();
+    else if(currentTab==="dashboard") main.innerHTML = renderDashboard();
+    else if(currentTab==="itemsetup") main.innerHTML = renderItemSetup();
+    else if(currentTab==="recipes") main.innerHTML = renderRecipes();
+    else if(currentTab==="salesdata") main.innerHTML = renderSalesData();
+    else if(currentTab==="purchase") main.innerHTML = renderPurchase();
+    else if(currentTab==="sageimport") main.innerHTML = renderSageImport();
+    else if(currentTab==="stocktake") main.innerHTML = renderStockTake();
+    else if(currentTab==="users") main.innerHTML = renderUsers();
+    else if(currentTab==="backup") main.innerHTML = renderBackup();
+    wireTabEvents();
+  }
+
+  if(activeId){
+    const restored = document.getElementById(activeId);
+    if(restored){
+      restored.focus();
+      if(selStart!==null && typeof restored.setSelectionRange==="function"){
+        try{ restored.setSelectionRange(selStart, selEnd); }catch(e){}
+      }
+    }
+  }
+}
+
+// ---------- Data loading ----------
+function renderLoading(){
+  return `
+    <div class="loginwrap">
+      <div class="loginbox">
+        <div class="loginmark">DF</div>
+        <h2>Daily Fruit</h2>
+        <p class="helptext">Loading the latest data…</p>
+      </div>
+    </div>`;
+}
+
+function renderLoadError(message){
+  return `
+    <div class="loginwrap">
+      <div class="loginbox">
+        <div class="loginmark">DF</div>
+        <h2>Daily Fruit</h2>
+        <p class="helptext" style="color:var(--critical);">Couldn't load the latest data.</p>
+        <p class="helptext">${esc(message || "Unknown error")}</p>
+        <button class="btn primary" id="retryLoadBtn" style="width:100%;margin-top:14px;padding:13px;font-size:15px;">Try again</button>
+      </div>
+    </div>`;
+}
+
+// ---------- Login ----------
+function renderLogin(){
+  const users = DATA.users || [];
+  if(loginSelectedUser){
+    return `
+      <div class="loginwrap">
+        <div class="loginbox">
+          <div class="loginmark">DF</div>
+          <h2>Daily Fruit</h2>
+          <p class="helptext">Enter the PIN for <strong>${esc(loginSelectedUser)}</strong></p>
+          <input type="password" inputmode="numeric" pattern="[0-9]*" id="loginPin" placeholder="PIN" autofocus
+            style="font-size:22px;padding:14px;letter-spacing:6px;margin-top:14px;">
+          ${loginError ? `<div class="helptext" style="color:var(--critical);margin-top:8px;">${esc(loginError)}</div>` : ""}
+          <button class="btn primary" id="loginSubmit" style="width:100%;margin-top:14px;padding:13px;font-size:15px;">Log in</button>
+          <button class="btn ghost" id="loginBack" style="width:100%;margin-top:6px;">← Choose a different name</button>
+        </div>
+      </div>`;
+  }
+  const nameButtons = users.map(u=>`
+    <button class="quickbuyitem" data-login-pick="${esc(u.name)}" style="justify-content:center;">
+      <span class="qb-name">${esc(u.name)}</span>
+    </button>`).join("");
+  return `
+    <div class="loginwrap">
+      <div class="loginbox">
+        <div class="loginmark">DF</div>
+        <h2>Daily Fruit</h2>
+        <p class="helptext">Who's using the app?</p>
+        <div class="quickbuylist" style="margin-top:16px;text-align:left;">${nameButtons || `<div class="empty">No users set up yet — ask the owner to add one.</div>`}</div>
+      </div>
+    </div>`;
+}
+
+// ---------- shared bits ----------
+function distinctBaseProducts(){
+  const set = new Set();
+  for(const it of DATA.itemSetup) if(it.baseProduct) set.add(it.baseProduct);
+  return Array.from(set).sort();
+}
+function categoryFor(baseProduct){
+  if(!baseProduct) return "";
+  return DATA.baseProductCategories[baseProduct] || "";
+}
+function distinctCategories(){
+  const set = new Set();
+  Object.values(DATA.baseProductCategories).forEach(c=> c && set.add(c));
+  return Array.from(set).sort();
+}
+function allItemTexts(){
+  return DATA.itemSetup.map(it=>it.item).sort();
+}
+function datalistOptions(id, values){
+  return `<datalist id="${id}">` + values.map(v=>`<option value="${esc(v)}">`).join("") + `</datalist>`;
+}
+function chip(text, kind){ return `<span class="chip ${kind}">${esc(text)}</span>`; }
+function statusChip(status){
+  if(status==="OK") return chip("OK","good");
+  if(!status) return "";
+  return chip(status,"critical");
+}
+function shoppingStatusChip(status){
+  const kind = {"Critical":"critical","Buy":"warn","OK":"good","Overstocked":"neutral","No stock take":"neutral","Missing setup":"neutral"}[status] || "neutral";
+  return chip(status, kind);
+}
+function csvParseLine(line){
+  const out=[]; let cur=""; let inQ=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){ inQ = !inQ; continue; }
+    if(ch===',' && !inQ){ out.push(cur); cur=""; continue; }
+    cur+=ch;
+  }
+  out.push(cur);
+  return out.map(s=>s.trim());
+}
+function toCsvField(v){
+  v = (v===null||v===undefined) ? "" : String(v);
+  if(/[",\n]/.test(v)) return '"' + v.replace(/"/g,'""') + '"';
+  return v;
+}
+// Sage "Sales By Item Report" exports can carry a header row and/or a trailing
+// "Grand Total" (or similar) summary row alongside the real item rows.
+const SALES_CSV_NON_ITEM_LABELS = new Set(["item","items","total","totals","grand total","sub total","subtotal","sub-total"]);
+function parseSalesCsvText(text){
+  // one row per item: Item, Qty Sold, Total Cost, Total Selling.
+  // tolerates an optional header row and a trailing totals row (both skipped
+  // automatically, wherever they fall in the file) and blank lines.
+  const rows = [];
+  const lines = text.split(/\r?\n/);
+  lines.forEach((line, idx)=>{
+    if(!line.trim()) return;
+    const parts = csvParseLine(line);
+    if(parts.length < 4) return;
+    const itemLabel = (parts[0]||"").trim();
+    if(!itemLabel) return;
+    if(SALES_CSV_NON_ITEM_LABELS.has(itemLabel.toLowerCase())) return; // header or totals row, not a real item
+    if(idx===0){
+      const qtyCell = (parts[1]||"").trim();
+      if(qtyCell && isNaN(Number(qtyCell))) return; // fallback: header row with a non-numeric qty column
+    }
+    rows.push({item:itemLabel, qty:Number(parts[1])||0, cost:Number(parts[2])||0, selling:Number(parts[3])||0});
+  });
+  return rows;
+}
+
+// ---------- Shopping List ----------
+function renderBuyCell(r, today){
+  const bp = r.baseProduct;
+  const existing = purchaseEntryForDate(bp, today);
+
+  if(!canManagePurchases()){
+    // read-only role (Stock Taker): show what's been bought, but no way to log or edit it here
+    if(existing){
+      const hasQty = existing.qty!==undefined && existing.qty!==null && existing.qty!=="";
+      const label = "✓ " + (hasQty ? fmtNum(existing.qty)+" @ " : "") + money(existing.cost);
+      return chip(label,"good");
+    }
+    return `<span class="helptext">—</span>`;
+  }
+
+  const showForm = shoppingBuyEditing.has(bp);
+
+  if(!showForm){
+    if(existing){
+      const hasQty = existing.qty!==undefined && existing.qty!==null && existing.qty!=="";
+      const label = "✓ " + (hasQty ? fmtNum(existing.qty)+" @ " : "") + money(existing.cost);
+      return `<div data-buy-row="${esc(bp)}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;white-space:nowrap;">
+        ${chip(label,"good")}
+        <button class="btn" data-buy-edit="${esc(bp)}" style="padding:2px 8px;font-size:12px;">Edit</button>
+        <button class="delbtn" data-buy-delete="${esc(bp)}" title="Delete this entry">✕</button>
+      </div>`;
+    }
+    return `<div data-buy-row="${esc(bp)}"><button class="btn" data-buy-edit="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ Log buy</button></div>`;
+  }
+
+  const prefillQty = existing && existing.qty!==undefined && existing.qty!==null ? existing.qty : (r.toBuy!==null ? r.toBuy : "");
+  const prefillCost = existing && existing.cost!==undefined && existing.cost!==null ? existing.cost : "";
+  return `<div class="buyrow" data-buy-row="${esc(bp)}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
+    <input type="number" step="0.01" class="buy-qty" placeholder="Qty" value="${esc(prefillQty)}" style="width:56px;">
+    <input type="number" step="0.01" class="buy-cost" placeholder="Price/u" value="${esc(prefillCost)}" style="width:72px;">
+    <button class="btn primary" data-buy-tick="${esc(bp)}" title="Mark bought" style="padding:2px 10px;font-size:12px;">✓</button>
+    <button class="btn" data-buy-cancel="${esc(bp)}" style="padding:2px 6px;font-size:12px;" title="Close without saving">✕</button>
+  </div>`;
+}
+
+function renderShoppingList(){
+  const all = shoppingListComputed();
+  const counts = {"Critical":0, "Buy":0, "OK":0, "Overstocked":0, "No stock take":0, "Missing setup":0};
+  all.forEach(r=> counts[r.status] = (counts[r.status]||0) + 1);
+
+  const categories = Array.from(new Set(all.map(r=> r.category || "Uncategorized"))).sort();
+  const categoryOptions = `<option value="">All categories</option>` +
+    categories.map(c=>`<option value="${esc(c)}" ${c===shoppingCategoryFilter?"selected":""}>${esc(c)}</option>`).join("");
+
+  const statusList = ["Critical","Buy","Overstocked","No stock take","Missing setup","OK"];
+  const statusOptions = `<option value="">All statuses</option>` +
+    statusList.map(s=>`<option value="${esc(s)}" ${s===shoppingStatusFilter?"selected":""}>${esc(s)} (${counts[s]||0})</option>`).join("");
+
+  let rows = all;
+  if(shoppingCategoryFilter) rows = rows.filter(r=> (r.category||"Uncategorized")===shoppingCategoryFilter);
+  if(shoppingStatusFilter) rows = rows.filter(r=> r.status===shoppingStatusFilter);
+
+  const critPct = Number(DATA.shoppingList.criticalPct)||0.25;
+  const overPct = Number(DATA.shoppingList.overstockPct)||1.5;
+  const noStockTakesYet = DATA.stockTakes.length === 0;
+  const today = new Date().toISOString().slice(0,10);
+
+  const tableRows = rows.map(r=>{
+    const flags = [];
+    if(r.missing && r.missing!=="OK") flags.push(chip(r.missing,"neutral"));
+    if(r.consistency && r.consistency!=="OK") flags.push(chip(r.consistency,"neutral"));
+    return `
+    <tr>
+      <td>${esc(r.baseProduct)}</td>
+      <td>${esc(r.category||"—")}</td>
+      <td>${shoppingStatusChip(r.status)}</td>
+      <td class="num">${r.currentStock!==null ? fmtNum(r.currentStock) : "—"}</td>
+      <td class="helptext">${esc(r.stockDate||"—")}</td>
+      <td class="num">${r.recommended!==null ? fmtNum(r.recommended,0) : "—"}</td>
+      <td class="num" style="font-weight:${r.toBuy?'600':'400'};">${r.toBuy!==null ? fmtNum(r.toBuy,0) : "—"}</td>
+      <td>${esc(r.procUnit||"—")}</td>
+      <td>${renderBuyCell(r, today)}</td>
+      <td>${flags.join(" ") || ""}</td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Shopping List</h2><p>Compares your most recent stock take against your Calculated Holdings target for every base product, so you can see at a glance what's critically low, what's worth buying, and what's overstocked.</p></div>
+    </div>
+    ${noStockTakesYet ? `<div class="banner warn">No stock takes recorded yet — log today's counts in Stock Take, then this list will show what needs buying.</div>` : ""}
+    <div class="cardrow">
+      <div class="stat"><div class="label">Critical</div><div class="value" style="color:var(--critical)">${counts["Critical"]}</div></div>
+      <div class="stat"><div class="label">Recommended to buy</div><div class="value" style="color:var(--warn)">${counts["Buy"]}</div></div>
+      <div class="stat"><div class="label">OK</div><div class="value" style="color:var(--good)">${counts["OK"]}</div></div>
+      <div class="stat"><div class="label">Overstocked</div><div class="value" style="color:var(--muted)">${counts["Overstocked"]}</div></div>
+      <div class="stat"><div class="label">No stock take</div><div class="value small" style="color:var(--muted)">${counts["No stock take"]}</div></div>
+      <div class="stat"><div class="label">Missing setup</div><div class="value small" style="color:var(--muted)">${counts["Missing setup"]}</div></div>
+    </div>
+    ${canManagePurchases() ? `
+    <div class="card">
+      <div class="cardhead"><div><h3>Thresholds</h3><div class="desc">Stock at or below the critical % of target is flagged Critical; at or above the overstock % is flagged Overstocked. Anything else below 100% of target is Buy.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Critical threshold (% of target)</label><input type="number" step="1" min="0" id="shoppingCriticalPct" value="${round2(critPct*100)}"></div>
+          <div class="field"><label>Overstock threshold (% of target)</label><input type="number" step="1" min="100" id="shoppingOverstockPct" value="${round2(overPct*100)}"></div>
+          <div><button class="btn primary" id="saveShoppingThresholds">Save thresholds</button></div>
+        </div>
+      </div>
+    </div>` : ""}
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Base products</h3><div class="desc">${rows.length} of ${all.length} shown, most urgent first.</div></div>
+        <div class="field" style="min-width:170px;"><label>Status</label><select id="shoppingStatusFilterSel">${statusOptions}</select></div>
+        <div class="field" style="min-width:170px;"><label>Category</label><select id="shoppingCategoryFilterSel">${categoryOptions}</select></div>
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;max-height:640px;overflow-y:auto;"><table>
+          <thead><tr><th>Base product</th><th>Category</th><th>Status</th><th class="num">Current stock</th><th>Counted on</th><th class="num">Holding target</th><th class="num">Suggested buy</th><th>Unit</th><th>Bought today</th><th>Flags</th></tr></thead>
+          <tbody>${tableRows || `<tr><td colspan="10" class="empty">Nothing matches this filter.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+}
+
+// % of stock on hand vs. holding target, shared by the Quick Buy list and entry screen.
+// Reuses shoppingListComputed's already-computed ratio (currentStock / recommended) rather than recomputing it.
+function stockPctBadge(r){
+  if(r.ratio===null || r.ratio===undefined) return `<span class="helptext">—</span>`;
+  const pct = Math.round(r.ratio*100);
+  const kind = {"Critical":"critical","Buy":"warn","OK":"good","Overstocked":"neutral"}[r.status] || "neutral";
+  return chip(pct + "% of stock", kind);
+}
+
+// ---------- Quick Buy (phone-friendly market entry) ----------
+function renderQuickBuy(){
+  const today = new Date().toISOString().slice(0,10);
+  const all = shoppingListComputed(); // already sorted most-urgent-first
+  const search = quickBuySearch.trim().toLowerCase();
+  const categories = Array.from(new Set(all.map(r=> r.category || "Uncategorized"))).sort();
+  const categoryOptions = `<option value="">All categories</option>` +
+    categories.map(c=>`<option value="${esc(c)}" ${c===quickBuyCategoryFilter?"selected":""}>${esc(c)}</option>`).join("");
+  let candidates = quickBuyCategoryFilter ? all.filter(r=> (r.category||"Uncategorized")===quickBuyCategoryFilter) : all;
+  if(search) candidates = candidates.filter(r=> r.baseProduct.toLowerCase().includes(search));
+  const todaysEntries = DATA.purchaseCosts.filter(p=> p.date===today);
+  const todaysIssues = DATA.purchaseIssues.filter(p=> p.date===today);
+
+  let bodyHtml;
+  if(quickBuySelected){
+    const row = all.find(r=>r.baseProduct===quickBuySelected) || {baseProduct:quickBuySelected, status:null, toBuy:null, procUnit:"", ratio:null, currentStock:null, recommended:null};
+    const existing = purchaseEntryForDate(quickBuySelected, today);
+    const existingIssue = unableEntryForDate(quickBuySelected, today);
+    const prefillQty = existing && existing.qty!==undefined && existing.qty!==null ? existing.qty : (row.toBuy!==null && row.toBuy!==undefined ? row.toBuy : "");
+    const prefillCost = existing && existing.cost!==undefined && existing.cost!==null ? existing.cost : "";
+    const prefillReason = existingIssue ? existingIssue.reason : "";
+    const stockLine = row.ratio!==null && row.ratio!==undefined
+      ? `${Math.round(row.ratio*100)}% of target (${fmtNum(row.currentStock,0)} on hand / ${fmtNum(row.recommended,0)} target)`
+      : (row.currentStock===null ? "no stock take yet" : "");
+
+    const modeToggle = `
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <button class="btn ${quickBuyMode==='buy'?'primary':''}" data-quickbuy-setmode="buy" style="flex:1;">Log purchase</button>
+        <button class="btn ${quickBuyMode==='unable'?'primary':''}" data-quickbuy-setmode="unable" style="flex:1;">Unable to purchase</button>
+      </div>`;
+
+    const buyForm = `
+      <div class="formgrid">
+        <div class="field"><label>Quantity</label><input type="number" inputmode="decimal" step="0.01" id="quickBuyQty" value="${esc(prefillQty)}" style="font-size:20px;padding:13px;"></div>
+        <div class="field"><label>Price per unit</label><input type="number" inputmode="decimal" step="0.01" id="quickBuyCost" value="${esc(prefillCost)}" style="font-size:20px;padding:13px;" placeholder="e.g. 85.00"></div>
+      </div>
+      <button class="btn primary" id="quickBuyConfirm" style="width:100%;font-size:16px;padding:15px;margin-top:14px;">✓ Confirm purchase</button>`;
+
+    const unableForm = `
+      <div class="field">
+        <label>Reason</label>
+        <input type="text" id="quickBuyReason" value="${esc(prefillReason)}" placeholder="e.g. out of season, quality not up to standard" style="font-size:16px;padding:13px;">
+      </div>
+      <button class="btn primary" id="quickBuyLogUnable" style="width:100%;font-size:16px;padding:15px;margin-top:14px;background:var(--critical);border-color:var(--critical);">✕ Log as unable to purchase</button>`;
+
+    bodyHtml = `
+      <div class="card">
+        <div class="cardbody">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:16px;">
+            <div>
+              <div style="font-size:21px;font-weight:700;line-height:1.3;">${esc(row.baseProduct)}</div>
+              <div class="helptext" style="margin-top:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                ${esc(row.procUnit||"")}
+                ${row.status ? shoppingStatusChip(row.status) : ""}
+                ${stockLine ? `<span>${esc(stockLine)}</span>` : ""}
+                ${row.toBuy!==null && row.toBuy!==undefined ? `<span>suggested buy: ${fmtNum(row.toBuy,0)}</span>` : ""}
+              </div>
+            </div>
+            <button class="btn" id="quickBuyBack">← Back</button>
+          </div>
+          ${modeToggle}
+          ${quickBuyMode==='unable' ? unableForm : buyForm}
+        </div>
+      </div>`;
+  } else {
+    // once a product's been bought (or logged as unable to purchase) today, sink it out of the
+    // urgency-ordered pick list so the top of the list always reflects what's still outstanding —
+    // but keep it visible (dimmed, with what was logged) rather than hiding it, so nothing gets
+    // double-bought or forgotten about.
+    const loggedTodaySet = new Set([...todaysEntries.map(p=>p.baseProduct), ...todaysIssues.map(p=>p.baseProduct)]);
+    const pending = candidates.filter(r=> !loggedTodaySet.has(r.baseProduct));
+    const done = candidates.filter(r=> loggedTodaySet.has(r.baseProduct));
+
+    const doneBadge = (r)=>{
+      const purchase = purchaseEntryForDate(r.baseProduct, today);
+      if(purchase){
+        const hasQty = purchase.qty!==undefined && purchase.qty!==null && purchase.qty!=="";
+        return chip("✓ " + (hasQty ? fmtNum(purchase.qty)+" @ " : "") + money(purchase.cost), "good");
+      }
+      const issue = unableEntryForDate(r.baseProduct, today);
+      if(issue) return chip("✕ " + issue.reason, "critical");
+      return "";
+    };
+
+    const pendingButtons = pending.slice(0,60).map(r=>`
+      <button class="quickbuyitem" data-quickbuy-pick="${esc(r.baseProduct)}">
+        <span class="qb-name">${esc(r.baseProduct)}</span>
+        <span class="qb-meta">
+          ${stockPctBadge(r)}
+          ${r.status ? shoppingStatusChip(r.status) : ""}
+        </span>
+      </button>`).join("");
+
+    const doneButtons = done.map(r=>`
+      <button class="quickbuyitem" data-quickbuy-pick="${esc(r.baseProduct)}" style="opacity:0.55;">
+        <span class="qb-name">${esc(r.baseProduct)}</span>
+        <span class="qb-meta">${doneBadge(r)}</span>
+      </button>`).join("");
+
+    bodyHtml = `
+      <div class="card">
+        <div class="cardbody">
+          <div class="formgrid" style="margin-bottom:12px;">
+            <div class="field"><label>Category</label><select id="quickBuyCategoryFilterSel">${categoryOptions}</select></div>
+          </div>
+          <input type="text" id="quickBuySearchInput" placeholder="Search a product…" value="${esc(quickBuySearch)}" style="font-size:16px;padding:13px;margin-bottom:12px;">
+          <div class="quickbuylist">${pendingButtons || (done.length ? `<div class="empty">Everything in this filter is logged for today ✓</div>` : `<div class="empty">No products match this filter.</div>`)}</div>
+          ${pending.length>60 ? `<div class="helptext" style="margin-top:10px;">${pending.length-60} more still to buy — keep typing to narrow it down.</div>` : ""}
+          ${done.length ? `
+            <div class="helptext" style="margin:16px 0 8px;font-weight:600;">Already logged today (${done.length})</div>
+            <div class="quickbuylist">${doneButtons}</div>
+          ` : ""}
+        </div>
+      </div>`;
+  }
+
+  const loggedRows = [
+    ...todaysEntries.map(p=>({type:"purchase", baseProduct:p.baseProduct, entry:p})),
+    ...todaysIssues.map(p=>({type:"issue", baseProduct:p.baseProduct, entry:p})),
+  ].sort((a,b)=> a.baseProduct.localeCompare(b.baseProduct));
+
+  const loggedHtml = loggedRows.length ? loggedRows.map(({type,baseProduct,entry})=>{
+    if(type==="purchase"){
+      const hasQty = entry.qty!==undefined && entry.qty!==null && entry.qty!=="";
+      return `
+      <div class="quickbuylogrow">
+        <span>${esc(baseProduct)}</span>
+        <span style="display:flex;align-items:center;gap:10px;">
+          <span class="num">${hasQty ? fmtNum(entry.qty)+" @ " : ""}${money(entry.cost)}</span>
+          <button class="btn small" data-quickbuy-edit="${esc(baseProduct)}">Edit</button>
+          <button class="delbtn" data-quickbuy-delete="${esc(baseProduct)}" title="Delete this entry">✕</button>
+        </span>
+      </div>`;
+    }
+    return `
+    <div class="quickbuylogrow">
+      <span>${esc(baseProduct)}</span>
+      <span style="display:flex;align-items:center;gap:10px;">
+        ${chip("Unable: " + entry.reason, "critical")}
+        <button class="btn small" data-quickbuy-edit="${esc(baseProduct)}">Edit</button>
+        <button class="delbtn" data-quickbuy-delete="${esc(baseProduct)}" title="Delete this entry">✕</button>
+      </span>
+    </div>`;
+  }).join("") : `<div class="empty">Nothing logged yet today.</div>`;
+
+  return `
+    <div class="pagehead">
+      <div><h2>Quick Buy</h2><p>Fast purchase entry for the market — search a product, enter what you bought (or why you couldn't), confirm. Saves straight to Purchase Costs.</p></div>
+    </div>
+    ${bodyHtml}
+    <div class="card">
+      <div class="cardhead"><h3>Logged today</h3><div class="desc">${esc(today)} — ${todaysEntries.length} ${todaysEntries.length===1?"purchase":"purchases"}, ${todaysIssues.length} unable to purchase</div></div>
+      <div class="cardbody">${loggedHtml}</div>
+    </div>`;
+}
+
+// ---------- Dashboard / Procurement Plan ----------
+function renderDashboard(){
+  const allRows = procurementPlanComputed();
+  const flagged = allRows.filter(r=>r.consistency!=="OK" || r.missing!=="OK").length;
+  const tracked = allRows.length;
+  const cm = DATA.procurementPlan.coverMultiplier;
+  const sb = DATA.procurementPlan.safetyBuffer;
+  const historyPeriods = DATA.salesHistory.length;
+
+  const categories = Array.from(new Set(allRows.map(r=> r.category || "Uncategorized"))).sort();
+  const categoryFilterOptions = `<option value="">All categories</option>` +
+    categories.map(c=>`<option value="${esc(c)}" ${c===dashboardCategoryFilter?"selected":""}>${esc(c)}</option>`).join("");
+
+  const rows = dashboardCategoryFilter ? allRows.filter(r=> (r.category||"Uncategorized")===dashboardCategoryFilter) : allRows;
+
+  const tableRows = rows.map(r=>`
+    <tr>
+      <td>${esc(r.baseProduct)}</td>
+      <td>${esc(r.category||"—")}</td>
+      <td>${esc(r.procUnit||"—")}</td>
+      <td class="num">${r.historyPeriods ? (r.historyPeriods+" day"+(r.historyPeriods===1?"":"s")) : "—"}</td>
+      <td class="num">${r.avgDemand!==null ? fmtNum(r.avgDemand) : "—"}</td>
+      <td><input class="rowinput num" data-cycle-input="${esc(r.baseProduct)}" value="${DATA.productCycles[r.baseProduct]!==undefined && DATA.productCycles[r.baseProduct]!==null ? DATA.productCycles[r.baseProduct] : ""}" placeholder="${fmtNum(cm,2)}" style="max-width:80px;"></td>
+      <td><input class="rowinput num" data-ceiling-input="${esc(r.baseProduct)}" value="${DATA.productCeilings[r.baseProduct]!==undefined && DATA.productCeilings[r.baseProduct]!==null ? DATA.productCeilings[r.baseProduct] : ""}" placeholder="none" style="max-width:80px;"></td>
+      <td class="num" style="font-weight:600;">${r.recommended!==null ? fmtNum(r.recommended,0) : "—"}${r.cappedByCeiling ? ` <span class="helptext" title="Capped by shelf-life max hold">⚠</span>` : ""}</td>
+      <td>${statusChip(r.consistency)}</td>
+      <td>${statusChip(r.missing)}</td>
+    </tr>`).join("");
+
+  const historyRows = DATA.salesHistory.slice().sort((a,b)=> b.date.localeCompare(a.date)).map(h=>`
+    <div class="quickbuylogrow">
+      <span>${esc(h.date)}</span>
+      <span style="display:flex;align-items:center;gap:10px;">
+        <span class="helptext">${Object.keys(h.demand||{}).length} product${Object.keys(h.demand||{}).length===1?"":"s"}</span>
+        <button class="btn small" data-del-history="${esc(h.date)}">Remove</button>
+      </span>
+    </div>`).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Calculated Holdings</h2><p>How much of each base product to hold, converted into the unit you actually buy in — based on a rolling average (and day-to-day spread) of demand across every sales upload archived so far, not just the one currently loaded. Upload daily (backdating historical reports if you have them) for the fastest, most accurate picture.</p></div>
+      <div class="actions"><button class="btn primary" id="savePlanSettings">Save settings</button></div>
+    </div>
+    <div class="cardrow">
+      <div class="stat"><div class="label">Base products tracked</div><div class="value">${tracked}</div></div>
+      <div class="stat"><div class="label">Flagged for review</div><div class="value" style="color:${flagged?'var(--warn)':'var(--good)'}">${flagged}</div></div>
+      <div class="stat"><div class="label">Days of sales archived</div><div class="value small">${historyPeriods}</div></div>
+      <div class="stat"><div class="label">Default cycle / buffer</div><div class="value small">${fmtNum(cm,2)}x / ${fmtNum(sb*100,0)}%</div></div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Default cover settings</h3><div class="desc">The fallback used whenever a category (safety buffer) or product (cycle length, below) doesn't have its own override.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Default cycle length (x avg daily demand)</label><input type="number" step="0.1" id="coverMultiplier" value="${cm}"></div>
+          <div class="field"><label>Default safety buffer %</label><input type="number" step="1" id="safetyBufferPct" value="${round2(sb*100)}"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Category safety buffers</h3><div class="desc">How much cushion to hold on top of average demand for each category. Leave blank to use the default above.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          ${categories.map(c=>`<div class="field"><label>${esc(c)} %</label><input class="rowinput num" data-catbuffer-input="${esc(c)}" value="${DATA.categoryBuffers[c]!==undefined && DATA.categoryBuffers[c]!==null ? round2(DATA.categoryBuffers[c]*100) : ""}" placeholder="${fmtNum(sb*100,0)}"></div>`).join("") || `<div class="empty">No categories set up yet.</div>`}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Base products</h3><div class="desc">Every base product set up in Item Setup, listed automatically. Set a per-product cycle length (how many periods of cover to hold before the next restock) and an optional shelf-life max hold to stop the recommendation ever exceeding what can be safely held.</div></div>
+        <div class="field" style="min-width:200px;">
+          <label>Filter by category</label>
+          <select id="dashboardCategoryFilter">${categoryFilterOptions}</select>
+        </div>
+      </div>
+      <div class="cardbody">
+        <div class="tablewrap"><table>
+          <thead><tr><th>Base product</th><th>Category</th><th>Procurement unit</th><th class="num">History</th><th class="num">Avg demand/day</th><th>Cycle (x)</th><th>Max hold</th><th class="num">Recommended qty</th><th>Consistency</th><th>Missing setup</th></tr></thead>
+          <tbody>${tableRows || `<tr><td colspan="10" class="empty">No base products set up yet — add some in Item Setup first.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Sales history archive</h3><div class="desc">One entry per report date (set on the Item Sales tab, including backdated historical reports) — this is what the rolling average above is built from. Remove an entry if a bad upload polluted it.</div></div></div>
+      <div class="cardbody">${historyRows || `<div class="empty">No sales history archived yet — it builds automatically the next time you upload an Item Sales report.</div>`}</div>
+    </div>`;
+}
+
+// ---------- Item Setup ----------
+function renderItemSetup(){
+  const derived = itemSetupDerived();
+  const q = itemSearch.trim().toLowerCase();
+  const filtered = q ? derived.filter(it => it.item.toLowerCase().includes(q) || (it.baseProduct||"").toLowerCase().includes(q)) : derived;
+  const setupCount = derived.filter(it=>it.baseProduct).length;
+
+  const rows = filtered.map(it=>{
+    const idx = DATA.itemSetup.indexOf(DATA.itemSetup.find(x=>x.item===it.item));
+    return `
+    <tr>
+      <td style="max-width:260px;">${esc(it.item)}</td>
+      <td class="num">${fmtNum(it.combinedQty)}</td>
+      <td class="num">${it.recipeQty ? fmtNum(it.recipeQty) : "—"}</td>
+      <td><input class="rowinput" data-field="baseProduct" data-idx="${idx}" value="${esc(it.baseProduct||"")}" list="baseProductsDL"></td>
+      <td><input class="rowinput" data-field="category" data-idx="${idx}" value="${esc(categoryFor(it.baseProduct))}" list="categoriesDL" placeholder="e.g. Veg"></td>
+      <td><input class="rowinput" data-field="procurementUnit" data-idx="${idx}" value="${esc(it.procurementUnit||"")}"></td>
+      <td><input class="rowinput num" data-field="conversionFactor" data-idx="${idx}" value="${it.conversionFactor===null||it.conversionFactor===undefined?"":it.conversionFactor}" style="max-width:90px;"></td>
+      <td class="num">${it.rawNeeded!==null ? fmtNum(it.rawNeeded) : "—"}</td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Item Setup</h2><p>One row per sold item. Group variants under the same Base Product, name the unit you buy in, and give the pack-size conversion so demand can convert into that unit.</p></div>
+      <div class="actions"><button class="btn primary" id="saveItemSetup">Save changes</button></div>
+    </div>
+    <div class="cardrow">
+      <div class="stat"><div class="label">Items sold</div><div class="value">${derived.length}</div></div>
+      <div class="stat"><div class="label">Set up so far</div><div class="value">${setupCount}</div></div>
+    </div>
+    ${datalistOptions("baseProductsDL", distinctBaseProducts())}
+    ${datalistOptions("categoriesDL", distinctCategories())}
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Add a new item</h3><div class="desc">For a product that isn't in either sales report yet — e.g. a new line you're about to start selling. New items from your sales reports still get added automatically when you save Item Sales.</div></div>
+      </div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Item (as "CODE - Description - UNIT")</label><input type="text" id="newItemText" placeholder="e.g. STRWKG - Strawberries - KG"></div>
+          <div><button class="btn primary" id="addItemRow">Add item</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Items</h3><div class="desc">Edit the input columns, then Save changes once. Category applies to every variant of that Base Product.</div></div>
+        <div class="searchbar">🔍 <input type="text" id="itemSearchBox" placeholder="Search item or base product…" value="${esc(itemSearch)}"></div>
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;max-height:640px;overflow-y:auto;"><table>
+          <thead><tr><th>Item</th><th class="num">Qty sold</th><th class="num">From mixes</th><th>Base product</th><th>Category</th><th>Procurement unit</th><th>Qty per unit</th><th class="num">Units needed</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="8" class="empty">No items match your search.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+}
+
+// ---------- Recipes ----------
+function renderRecipes(){
+  const totals = recipeCompositeTotals();
+  const derived = itemSetupDerived();
+  const qtyMap = {}; derived.forEach(it=>qtyMap[it.item]=it.combinedQty);
+  const itemTexts = allItemTexts();
+
+  const rows = DATA.recipes.map((rec,i)=>{
+    const compQty = qtyMap[rec.compositeItem] || 0;
+    const factor = (rec.percent!==null && rec.percent!==undefined && rec.percent!=="") ? Number(rec.percent) : (Number(rec.fixedQty)||0);
+    const req = round2(compQty*factor);
+    const compOk = DATA.itemSetup.some(it=>it.item===rec.compositeItem);
+    const ingOk = DATA.itemSetup.some(it=>it.item===rec.ingredientItem);
+    const pctTotal = totals[rec.compositeItem];
+    let pctCheck = "—";
+    if(rec.percent!==null && rec.percent!==undefined && rec.percent!=="" && pctTotal!==undefined){
+      pctCheck = Math.abs(pctTotal-1)<0.001 ? "OK - 100%" : ("Check - totals "+Math.round(pctTotal*100)+"%");
+    }
+    return `<tr>
+      <td><input class="rowinput" data-recidx="${i}" data-field="compositeItem" value="${esc(rec.compositeItem)}" list="itemsDL">${compOk?"":chip("not found","critical")}</td>
+      <td><input class="rowinput" data-recidx="${i}" data-field="ingredientItem" value="${esc(rec.ingredientItem)}" list="itemsDL">${ingOk?"":chip("not found","critical")}</td>
+      <td><input class="rowinput num" data-recidx="${i}" data-field="percent" value="${rec.percent!==null&&rec.percent!==undefined&&rec.percent!==""?round2(rec.percent*100):""}" placeholder="%" style="max-width:80px;"></td>
+      <td><input class="rowinput num" data-recidx="${i}" data-field="fixedQty" value="${rec.fixedQty!==null&&rec.fixedQty!==undefined&&rec.fixedQty!==""?rec.fixedQty:""}" placeholder="qty" style="max-width:90px;"></td>
+      <td class="num">${fmtNum(req)}</td>
+      <td>${pctCheck==="—"?"—":(pctCheck.startsWith("OK")?chip(pctCheck,"good"):chip(pctCheck,"warn"))}</td>
+      <td><button class="delbtn" data-del-recipe="${i}" title="Remove row">✕</button></td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Product Mixes</h2><p>For products assembled in-house from other stock (e.g. Roast Veg Mix). Ingredient demand flows automatically into that ingredient's own Item Setup row.</p></div>
+      <div class="actions"><button class="btn primary" id="saveRecipes">Save changes</button></div>
+    </div>
+    ${datalistOptions("itemsDL", itemTexts)}
+    <div class="card">
+      <div class="cardhead"><div><h3>Add an ingredient line</h3><div class="desc">Fill in EITHER % of composite OR fixed qty per unit, not both.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Composite item (the mix)</label><input type="text" id="newRecComposite" list="itemsDL"></div>
+          <div class="field"><label>Ingredient item (the raw item)</label><input type="text" id="newRecIngredient" list="itemsDL"></div>
+          <div class="field"><label>% of composite</label><input type="number" step="1" id="newRecPercent" placeholder="e.g. 20"></div>
+          <div class="field"><label>OR fixed qty per unit</label><input type="number" step="0.0001" id="newRecFixed" placeholder="e.g. 0.05"></div>
+          <div><button class="btn primary" id="addRecipeRow">Add line</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>All product mix lines</h3><div class="desc">Edit any field directly — e.g. swap the ingredient item when a mix changes — then Save changes.</div></div></div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;">
+          <table>
+            <thead><tr><th>Composite item</th><th>Ingredient item</th><th class="num">%</th><th class="num">Fixed qty/unit</th><th class="num">Qty required</th><th>% total check</th><th></th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="7" class="empty">No product mixes yet — add one above.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ---------- Sales Data ----------
+function renderSalesEntityCard(title, entityKey, pending, currentCount){
+  const body = pending
+    ? `<div class="quickbuylogrow" style="border:1px solid var(--good);border-radius:8px;padding:10px 12px;">
+        <span>${chip("✓ Staged", "good")} ${esc(pending.filename)} — ${pending.rows.length} item${pending.rows.length===1?"":"s"}</span>
+        <button class="btn small" data-clear-pending="${entityKey}">Remove</button>
+      </div>`
+    : `<label class="dropzone" id="${entityKey}Dropzone">
+        <div class="dztitle">Drop CSV here, or click to browse</div>
+        <div class="dzsub">Staged until you click Submit below — archived under the report date above</div>
+        <input type="file" id="${entityKey}FileInput" accept=".csv,text/csv,.txt">
+      </label>`;
+  return `
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>${esc(title)}</h3><div class="desc">${currentCount} item${currentCount===1?"":"s"} currently loaded.</div></div>
+      </div>
+      <div class="cardbody">${body}</div>
+    </div>`;
+}
+
+function renderSalesData(){
+  const histCount = DATA.salesHistory.length;
+  const bothStaged = !!(salesPendingA && salesPendingB);
+  const missing = [];
+  if(!salesPendingA) missing.push("Pyroca");
+  if(!salesPendingB) missing.push("DF Veg");
+  return `
+    <div class="pagehead">
+      <div><h2>Item Sales</h2><p>Manual backup for now — this will pull automatically from Sage once the API is connected. Drop each company's "Sales By Item Report" export here as a CSV: Item, Qty Sold, Total Cost, Total Selling. Both companies need a file staged for the report date before Submit goes live.</p></div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Report date</h3><div class="desc">Which date this upload covers. Defaults to today — wind it back to backdate a historical report into the sales history archive that Calculated Holdings averages over (${histCount} day${histCount===1?"":"s"} archived so far). Upload daily for the fastest, most accurate rolling average.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Date</label><input type="date" id="salesUploadDateInput" value="${esc(salesUploadDate)}"></div>
+        </div>
+      </div>
+    </div>
+    ${renderSalesEntityCard("Pyroca", "salesA", salesPendingA, DATA.salesA.length)}
+    ${renderSalesEntityCard("DF Veg", "salesB", salesPendingB, DATA.salesB.length)}
+    <div class="card">
+      <div class="cardbody" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <div class="helptext">${bothStaged ? `Ready to submit for ${esc(salesUploadDate)}.` : `Waiting on: ${missing.join(" and ")}.`}</div>
+        <button class="btn primary" id="salesUploadSubmit" ${bothStaged?"":"disabled"}>Submit for ${esc(salesUploadDate)}</button>
+      </div>
+    </div>
+    <p class="helptext">New items not yet in Item Setup are added automatically (with a blank Base Product) so nothing is silently dropped — you'll see a note after submitting.</p>`;
+}
+
+// ---------- Purchase Costs ----------
+function renderPurchase(){
+  const bpSet = distinctBaseProducts();
+  const seen = {};
+  const entries = DATA.purchaseCosts.map((p,i)=>{
+    const found = bpSet.includes(p.baseProduct);
+    const dup = !!seen[p.baseProduct];
+    seen[p.baseProduct] = true;
+    const count = DATA.itemSetup.filter(it=>it.baseProduct===p.baseProduct).length;
+    return {p, i, found, dup, count, dateKey: p.date || "(no date)"};
+  });
+
+  const distinctDates = Array.from(new Set(entries.map(e=>e.dateKey))).sort().reverse();
+  const dateFilterOptions = `<option value="">All dates</option>` +
+    distinctDates.map(d=>`<option value="${esc(d)}" ${d===purchaseDateFilter?"selected":""}>${esc(d)}</option>`).join("");
+
+  const groupDates = purchaseDateFilter ? distinctDates.filter(d=>d===purchaseDateFilter) : distinctDates;
+  const groupsHtml = groupDates.map(dateKey=>{
+    const group = entries.filter(e=>e.dateKey===dateKey);
+    const groupRows = group.map(({p,i,found,dup,count})=>{
+      const hasQty = p.qty!==undefined && p.qty!==null && p.qty!=="";
+      const total = hasQty ? Number(p.qty)*Number(p.cost) : null;
+      return `
+      <tr>
+        <td>${esc(p.baseProduct)}</td>
+        <td class="num">${hasQty ? fmtNum(p.qty) : "—"}</td>
+        <td class="num">${money(p.cost)}</td>
+        <td class="num">${total!==null ? money(total) : "—"}</td>
+        <td>${found?statusChip("OK"):statusChip("NOT FOUND")}</td>
+        <td>${dup?statusChip("DUPLICATE — first row used"):statusChip("OK")}</td>
+        <td class="num">${count}</td>
+        <td class="helptext">${esc(p.loggedBy||"—")}</td>
+        <td><button class="delbtn" data-del-purchase="${i}" title="Remove row">✕</button></td>
+      </tr>`;
+    }).join("");
+    return `
+      <div class="tablewrap" style="border:none;border-radius:0;border-bottom:1px solid var(--line);">
+        <table>
+          <thead>
+            <tr><th colspan="9" style="font-size:13px;text-transform:none;letter-spacing:0;color:var(--ink);">${esc(dateKey)} — ${group.length} ${group.length===1?"entry":"entries"}</th></tr>
+            <tr><th>Base product</th><th class="num">Qty</th><th class="num">Cost / unit</th><th class="num">Total</th><th>Found?</th><th>Duplicate?</th><th class="num">Item codes affected</th><th>Logged by</th><th></th></tr>
+          </thead>
+          <tbody>${groupRows}</tbody>
+        </table>
+      </div>`;
+  }).join("");
+
+  const draftRows = purchaseDraftLines.map((l,i)=>{
+    const hasQty = l.qty!==undefined && l.qty!==null && l.qty!=="";
+    const total = hasQty ? Number(l.qty)*Number(l.cost) : null;
+    return `
+    <tr>
+      <td>${esc(l.baseProduct)}</td>
+      <td class="num">${hasQty ? fmtNum(l.qty) : "—"}</td>
+      <td class="num">${money(l.cost)}</td>
+      <td class="num">${total!==null ? money(total) : "—"}</td>
+      <td><button class="delbtn" data-del-draft="${i}" title="Remove line">✕</button></td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Purchase Costs</h2><p>Pick the date you bought stock, add a line for every product you purchased that day, then submit them all together.</p></div>
+    </div>
+    ${datalistOptions("baseProductsDL", distinctBaseProducts())}
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>New purchase entry</h3><div class="desc">Set the date once, add every product bought that day below, then submit as a batch.</div></div>
+      </div>
+      <div class="cardbody">
+        <div class="formgrid" style="margin-bottom:14px;">
+          <div class="field"><label>Purchase date</label><input type="date" id="purchDraftDate" value="${esc(purchaseDraftDate)}"></div>
+        </div>
+        <div class="formgrid">
+          <div class="field"><label>Base product</label><input type="text" id="draftLineBase" list="baseProductsDL"></div>
+          <div class="field"><label>Quantity</label><input type="number" step="0.01" id="draftLineQty" placeholder="e.g. 10"></div>
+          <div class="field"><label>Cost per procurement unit</label><input type="number" step="0.01" id="draftLineCost" placeholder="e.g. 85.00"></div>
+          <div><button class="btn" id="addDraftLine">Add line</button></div>
+        </div>
+        ${purchaseDraftLines.length ? `
+        <div class="tablewrap" style="margin-top:14px;"><table>
+          <thead><tr><th>Base product</th><th class="num">Qty</th><th class="num">Cost / unit</th><th class="num">Total</th><th></th></tr></thead>
+          <tbody>${draftRows}</tbody>
+        </table></div>
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
+          <button class="btn primary" id="submitPurchaseBatch">Submit ${purchaseDraftLines.length} ${purchaseDraftLines.length===1?"entry":"entries"} for ${esc(purchaseDraftDate||"—")}</button>
+          <button class="btn" id="clearPurchaseDraft">Clear</button>
+        </div>` : `<div class="empty" style="margin-top:14px;">No lines added yet — add products above, then submit.</div>`}
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Current entries</h3><div class="desc">Keep this to your latest purchases — remove old ones rather than leaving duplicates.</div></div>
+        <div class="field" style="min-width:170px;">
+          <label>Filter by date</label>
+          <select id="purchDateFilter">${dateFilterOptions}</select>
+        </div>
+      </div>
+      <div class="cardbody" style="padding:0;">
+        ${groupsHtml || `<div class="empty">No purchases logged yet.</div>`}
+      </div>
+    </div>`;
+}
+
+// ---------- Sage CSV ----------
+function renderSageImport(){
+  const all = sageImportComputed(sageDateFilter);
+  const rows = sageOnlyPurchasedOnDate ? all.filter(r=>r.purchasedOnDate) : all;
+  const tableRows = rows.map(r=>`
+    <tr>
+      <td>${esc(r.itemCode)}</td>
+      <td class="num" style="font-weight:${r.purchasedOnDate?'600':'400'};">${r.averageCost!==null?money(r.averageCost):"—"}</td>
+      <td class="num">${fmtNum(r.quantityOnHand)}</td>
+      <td class="helptext">${esc(r.item)}</td>
+    </tr>`).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Sage CSV</h2><p>Average Cost is pulled from Purchase Costs entries logged on the date selected below; Quantity On Hand is exported as 0.</p></div>
+      <div class="actions">
+        <div class="field" style="min-width:170px;">
+          <label>Purchase date</label>
+          <input type="date" id="sageDateFilter" value="${esc(sageDateFilter)}">
+        </div>
+        <label class="btn"><input type="checkbox" id="toggleFilter" ${sageOnlyPurchasedOnDate?"checked":""} style="margin-right:6px;">Only items purchased on this date</label>
+        <button class="btn primary" id="downloadSageCsv">Download CSV</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><h3>Export rows</h3><div class="desc">${rows.length} row(s) for ${esc(sageDateFilter||"—")} — matches the "Item Code, Average Cost, Quantity On Hand" import format.</div></div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;max-height:600px;overflow-y:auto;">
+          <table>
+            <thead><tr><th>Item code</th><th class="num">Average cost</th><th class="num">Quantity on hand</th><th>Item</th></tr></thead>
+            <tbody>${tableRows || `<tr><td colspan="4" class="empty">No purchases logged for this date yet — log one in Purchase Costs.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ---------- Stock Take ----------
+function renderStockTake(){
+  const byCat = {};
+  distinctBaseProducts().forEach(bp=>{
+    const cat = categoryFor(bp) || "Uncategorized";
+    (byCat[cat] = byCat[cat]||[]).push(bp);
+  });
+  const categories = Object.keys(byCat).sort();
+  const catForBp = {};
+  categories.forEach(c=> byCat[c].forEach(bp=> catForBp[bp]=c));
+
+  const hasValue = v => v!==undefined && v!==null && v!=="";
+
+  // records already saved for the currently selected stock-take date, keyed by base product
+  const takesForDate = {};
+  DATA.stockTakes.forEach(r=>{
+    if(r.date === stockTakeDate) takesForDate[r.baseProduct] = r.amount;
+  });
+
+  const catOptions = categories.map(c=>{
+    const bps = byCat[c];
+    const entered = bps.filter(bp=>hasValue(takesForDate[bp])).length;
+    return `<option value="${esc(c)}" ${c===stockCategoryFilter?"selected":""}>${esc(c)} (${entered}/${bps.length})</option>`;
+  }).join("");
+
+  let entryCardHtml = "";
+  if(stockCategoryFilter && byCat[stockCategoryFilter]){
+    const bps = byCat[stockCategoryFilter].slice().sort();
+    const rows = bps.map(bp=>{
+      const val = takesForDate[bp];
+      return `<tr>
+        <td>${esc(bp)}</td>
+        <td><input class="rowinput num" data-stock-bp="${esc(bp)}" value="${hasValue(val)?val:""}" placeholder="0" style="max-width:140px;"></td>
+      </tr>`;
+    }).join("");
+    entryCardHtml = `
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>${esc(stockCategoryFilter)} — ${esc(stockTakeDate)}</h3><div class="desc">${bps.length} base product(s) in this category. Enter the stock amount counted on this date, then submit. Already-entered amounts are editable — correct and resubmit if needed.</div></div>
+        <button class="btn primary" id="submitStockTake">Submit</button>
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;">
+          <table>
+            <thead><tr><th>Base product</th><th class="num">Stock amount</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const archiveEntries = DATA.stockTakes.map((r,i)=>({r,i}));
+  const distinctArchiveDates = Array.from(new Set(archiveEntries.map(e=>e.r.date))).sort().reverse();
+  const archiveDateFilterOptions = `<option value="">All dates</option>` +
+    distinctArchiveDates.map(d=>`<option value="${esc(d)}" ${d===stockArchiveDateFilter?"selected":""}>${esc(d)}</option>`).join("");
+
+  const archiveGroupDates = stockArchiveDateFilter ? distinctArchiveDates.filter(d=>d===stockArchiveDateFilter) : distinctArchiveDates;
+  const archiveGroupsHtml = archiveGroupDates.map(dateKey=>{
+    const group = archiveEntries.filter(e=>e.r.date===dateKey).slice().sort((a,b)=> a.r.baseProduct.localeCompare(b.r.baseProduct));
+    const groupRows = group.map(({r,i})=>`
+      <tr>
+        <td>${esc(r.baseProduct)}</td>
+        <td>${esc(catForBp[r.baseProduct]||"Uncategorized")}</td>
+        <td class="num">${fmtNum(r.amount,0)}</td>
+        <td class="helptext">${esc(r.loggedBy||"—")}</td>
+        <td><button class="delbtn" data-del-stocktake="${i}" title="Remove row">✕</button></td>
+      </tr>`).join("");
+    return `
+      <div class="tablewrap" style="border:none;border-radius:0;border-bottom:1px solid var(--line);">
+        <table>
+          <thead>
+            <tr><th colspan="5" style="font-size:13px;text-transform:none;letter-spacing:0;color:var(--ink);">${esc(dateKey)} — ${group.length} ${group.length===1?"entry":"entries"}</th></tr>
+            <tr><th>Base product</th><th>Category</th><th class="num">Stock amount</th><th>Logged by</th><th></th></tr>
+          </thead>
+          <tbody>${groupRows}</tbody>
+        </table>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Input Stock Levels</h2><p>Pick the date, choose a category, enter the stock count for each base product, then submit. Every submission is kept in the archive below so you can look back at any previous day.</p></div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Stock take date</h3><div class="desc">Entries are saved against this date. Pick an earlier date to review or correct a past stock take.</div></div>
+        <div class="field" style="min-width:170px;">
+          <label>Date</label>
+          <input type="date" id="stockTakeDateInput" value="${esc(stockTakeDate)}">
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Category</h3><div class="desc">Choose a category to load its base products below.</div></div>
+        <div class="field" style="min-width:220px;">
+          <label>Category</label>
+          <select id="stockCategorySelect">
+            <option value="">Select a category…</option>
+            ${catOptions}
+          </select>
+        </div>
+      </div>
+    </div>
+    ${entryCardHtml}
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Archive</h3><div class="desc">Every stock take submitted, grouped by date.</div></div>
+        <div class="field" style="min-width:170px;">
+          <label>Filter by date</label>
+          <select id="stockArchiveDateFilter">${archiveDateFilterOptions}</select>
+        </div>
+      </div>
+      <div class="cardbody" style="padding:0;">
+        ${archiveGroupsHtml || `<div class="empty">No stock takes submitted yet.</div>`}
+      </div>
+    </div>`;
+}
+
+// ---------- Users ----------
+function renderUsers(){
+  const users = DATA.users || [];
+  const roleLabel = {owner:"Owner", procurement:"Procurement", stocktaker:"Stock Taker"};
+  const roleOptionsFor = (current)=> ["owner","procurement","stocktaker"].map(r=>
+    `<option value="${r}" ${r===current?"selected":""}>${roleLabel[r]}</option>`).join("");
+
+  const rows = users.map((u,i)=>{
+    const isSelf = currentUser && currentUser.name===u.name;
+    return `
+    <tr>
+      <td>${esc(u.name)}${isSelf ? ` <span class="helptext">(you)</span>` : ""}</td>
+      <td><select class="rowinput" data-idx="${i}" data-field="role">${roleOptionsFor(u.role)}</select></td>
+      <td><input class="rowinput num" data-idx="${i}" data-field="pin" value="${esc(u.pin)}" style="max-width:110px;"></td>
+      <td><button class="delbtn" data-del-user="${i}" title="Remove user">✕</button></td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Users</h2><p>Who can log in, and what they can see. This is a simple access gate for your team, not encrypted security — PINs are stored in this page's own data.</p></div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Add a user</h3></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Name</label><input type="text" id="newUserName" placeholder="e.g. John"></div>
+          <div class="field"><label>PIN</label><input type="text" inputmode="numeric" id="newUserPin" placeholder="e.g. 1234"></div>
+          <div class="field"><label>Role</label><select id="newUserRole">${roleOptionsFor("procurement")}</select></div>
+          <div><button class="btn" id="addUserBtn">Add user</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Existing users</h3><div class="desc">${users.length} user(s). Edit role or PIN below, then save.</div></div>
+        <button class="btn primary" id="saveUsersBtn">Save changes</button>
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Name</th><th>Role</th><th class="num">PIN</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="4" class="empty">No users yet.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>What each role can access</h3></div></div>
+      <div class="cardbody helptext">
+        <strong>Owner</strong> — everything, including Users and Backup &amp; Restore.<br>
+        <strong>Procurement</strong> — Quick Buy, Shopping List, Purchase Costs, Stock Take.<br>
+        <strong>Stock Taker</strong> — Stock Take, and a read-only Shopping List.
+      </div>
+    </div>`;
+}
+
+// ---------- Backup & Restore ----------
+function renderBackup(){
+  return `
+    <div class="pagehead">
+      <div><h2>Backup &amp; Restore</h2><p>Download a full snapshot of everything in this app, and restore from one if you ever need to. Worth doing before any big edit.</p></div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Download a backup</h3><div class="desc">Saves every tab's data — sales, item setup, recipes, calculated holdings, purchase costs, categories, stock levels — as one JSON file.</div></div>
+      </div>
+      <div class="cardbody">
+        <button class="btn primary" id="downloadBackup">Download backup (JSON)</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Restore from a backup</h3><div class="desc">Replaces everything currently in the app with the contents of the backup file you choose. Use this if an update ever overwrites something.</div></div>
+      </div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Backup file</label><input type="file" id="restoreFileInput" accept="application/json,.json"></div>
+          <div><button class="btn" id="restoreBackup">Restore from file</button></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+
+function wireTabEvents(){
+    if(currentTab==="shoppinglist"){
+    document.getElementById("shoppingStatusFilterSel").addEventListener("change", (e)=>{
+      shoppingStatusFilter = e.target.value;
+      render();
+    });
+    document.getElementById("shoppingCategoryFilterSel").addEventListener("change", (e)=>{
+      shoppingCategoryFilter = e.target.value;
+      render();
+    });
+    const saveThresholdsBtn = document.getElementById("saveShoppingThresholds");
+    if(saveThresholdsBtn){
+      saveThresholdsBtn.addEventListener("click", ()=>{
+        const critRaw = Number(document.getElementById("shoppingCriticalPct").value);
+        const overRaw = Number(document.getElementById("shoppingOverstockPct").value);
+        DATA.shoppingList.criticalPct = (critRaw>0 ? critRaw : 25)/100;
+        DATA.shoppingList.overstockPct = (overRaw>100 ? overRaw : 150)/100;
+        persist("Thresholds saved");
+      });
+    }
+    document.querySelectorAll("[data-buy-tick]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const container = btn.closest("[data-buy-row]");
+        const bp = container.dataset.buyRow;
+        const qtyVal = container.querySelector(".buy-qty").value;
+        const costVal = container.querySelector(".buy-cost").value;
+        if(!costVal){ toast("Enter a price to mark this bought"); return; }
+        const today = new Date().toISOString().slice(0,10);
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+        const entry = {date:today, baseProduct:bp, cost:Number(costVal)};
+        if(qtyVal!==""){ entry.qty = Number(qtyVal); }
+        if(currentUser) entry.loggedBy = currentUser.name;
+        DATA.purchaseCosts.push(entry);
+        shoppingBuyEditing.delete(bp);
+        persist("Marked " + bp + " as bought");
+      });
+    });
+    document.querySelectorAll("[data-buy-edit]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        shoppingBuyEditing.add(btn.dataset.buyEdit);
+        render();
+      });
+    });
+    document.querySelectorAll("[data-buy-cancel]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        shoppingBuyEditing.delete(btn.dataset.buyCancel);
+        render();
+      });
+    });
+    document.querySelectorAll("[data-buy-delete]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const bp = btn.dataset.buyDelete;
+        const today = new Date().toISOString().slice(0,10);
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+        shoppingBuyEditing.delete(bp);
+        persist("Deleted today's logged purchase for " + bp);
+      });
+    });
+  }
+
+  if(currentTab==="quickbuy"){
+    if(!quickBuySelected){
+      const searchInput = document.getElementById("quickBuySearchInput");
+      if(searchInput){
+        searchInput.addEventListener("input", (e)=>{
+          quickBuySearch = e.target.value;
+          render();
+        });
+      }
+      const categorySel = document.getElementById("quickBuyCategoryFilterSel");
+      if(categorySel){
+        categorySel.addEventListener("change", (e)=>{
+          quickBuyCategoryFilter = e.target.value;
+          render();
+        });
+      }
+      document.querySelectorAll("[data-quickbuy-pick]").forEach(b=>{
+        b.addEventListener("click", ()=>{
+          const bp = b.dataset.quickbuyPick;
+          const today = new Date().toISOString().slice(0,10);
+          // default to whichever form matches what's already logged for today, else the purchase form
+          quickBuyMode = (unableEntryForDate(bp, today) && !purchaseEntryForDate(bp, today)) ? "unable" : "buy";
+          quickBuySelected = bp;
+          render();
+        });
+      });
+    } else {
+      document.getElementById("quickBuyBack").addEventListener("click", ()=>{
+        quickBuySelected = null;
+        render();
+      });
+      document.querySelectorAll("[data-quickbuy-setmode]").forEach(b=>{
+        b.addEventListener("click", ()=>{
+          quickBuyMode = b.dataset.quickbuySetmode;
+          render();
+        });
+      });
+      const confirmBtn = document.getElementById("quickBuyConfirm");
+      if(confirmBtn){
+        confirmBtn.addEventListener("click", ()=>{
+          const qtyVal = document.getElementById("quickBuyQty").value;
+          const costVal = document.getElementById("quickBuyCost").value;
+          if(!costVal){ toast("Enter a price to confirm"); return; }
+          const today = new Date().toISOString().slice(0,10);
+          const bp = quickBuySelected;
+          DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+          DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+          const entry = {date:today, baseProduct:bp, cost:Number(costVal)};
+          if(qtyVal!==""){ entry.qty = Number(qtyVal); }
+          if(currentUser) entry.loggedBy = currentUser.name;
+          DATA.purchaseCosts.push(entry);
+          quickBuySelected = null;
+          quickBuySearch = "";
+          persist("Logged " + bp);
+        });
+      }
+      const unableBtn = document.getElementById("quickBuyLogUnable");
+      if(unableBtn){
+        unableBtn.addEventListener("click", ()=>{
+          const reason = document.getElementById("quickBuyReason").value.trim();
+          if(!reason){ toast("Enter a reason first"); return; }
+          const today = new Date().toISOString().slice(0,10);
+          const bp = quickBuySelected;
+          DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+          DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+          const entry = {date:today, baseProduct:bp, reason};
+          if(currentUser) entry.loggedBy = currentUser.name;
+          DATA.purchaseIssues.push(entry);
+          quickBuySelected = null;
+          quickBuySearch = "";
+          persist("Logged " + bp + " as unable to purchase");
+        });
+      }
+    }
+    document.querySelectorAll("[data-quickbuy-edit]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const bp = b.dataset.quickbuyEdit;
+        const today = new Date().toISOString().slice(0,10);
+        quickBuyMode = (unableEntryForDate(bp, today) && !purchaseEntryForDate(bp, today)) ? "unable" : "buy";
+        quickBuySelected = bp;
+        render();
+      });
+    });
+    document.querySelectorAll("[data-quickbuy-delete]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const bp = b.dataset.quickbuyDelete;
+        const today = new Date().toISOString().slice(0,10);
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+        DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+        persist("Deleted today's log entry for " + bp);
+      });
+    });
+  }
+
+  if(currentTab==="dashboard"){
+    document.getElementById("savePlanSettings").addEventListener("click", ()=>{
+      DATA.procurementPlan.coverMultiplier = Number(document.getElementById("coverMultiplier").value)||1;
+      DATA.procurementPlan.safetyBuffer = (Number(document.getElementById("safetyBufferPct").value)||0)/100;
+      document.querySelectorAll("[data-catbuffer-input]").forEach(inp=>{
+        const cat = inp.dataset.catbufferInput;
+        const v = inp.value.trim();
+        if(v==="") delete DATA.categoryBuffers[cat];
+        else DATA.categoryBuffers[cat] = (Number(v)||0)/100;
+      });
+      // only the currently-visible (category-filtered) rows are in the DOM — untouched products keep
+      // whatever override they already had, so filtering the table before saving never wipes the rest.
+      document.querySelectorAll("[data-cycle-input]").forEach(inp=>{
+        const bp = inp.dataset.cycleInput;
+        const v = inp.value.trim();
+        if(v==="") delete DATA.productCycles[bp];
+        else DATA.productCycles[bp] = Number(v)||1;
+      });
+      document.querySelectorAll("[data-ceiling-input]").forEach(inp=>{
+        const bp = inp.dataset.ceilingInput;
+        const v = inp.value.trim();
+        if(v==="") delete DATA.productCeilings[bp];
+        else DATA.productCeilings[bp] = Number(v)||0;
+      });
+      persist("Cover settings saved");
+    });
+    document.getElementById("dashboardCategoryFilter").addEventListener("change", (e)=>{
+      dashboardCategoryFilter = e.target.value;
+      render();
+    });
+    document.querySelectorAll("[data-del-history]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const date = b.dataset.delHistory;
+        DATA.salesHistory = DATA.salesHistory.filter(h=>h.date!==date);
+        persist("Removed sales history for " + date);
+      });
+    });
+  }
+
+  if(currentTab==="itemsetup"){
+    document.getElementById("itemSearchBox").addEventListener("input", (e)=>{ itemSearch = e.target.value; render(); });
+    document.getElementById("addItemRow").addEventListener("click", ()=>{
+      const text = document.getElementById("newItemText").value.trim();
+      if(!text){ toast("Enter an item name first"); return; }
+      if(DATA.itemSetup.some(it=>it.item===text)){ toast("That item already exists"); return; }
+      const p = parseItem(text);
+      DATA.itemSetup.push({item:text, itemCode:p.code, description:p.description, sellingUnit:p.unit, baseProduct:null, procurementUnit:null, conversionFactor:null});
+      DATA.itemSetup.sort((a,b)=> a.item.localeCompare(b.item));
+      persist("Added " + text);
+    });
+    document.getElementById("saveItemSetup").addEventListener("click", ()=>{
+      // Base Product is listed before Category in each row, so by the time a category
+      // input is processed, that row's (possibly just-edited) baseProduct is already current.
+      document.querySelectorAll("#main [data-idx]").forEach(inp=>{
+        const idx = Number(inp.dataset.idx);
+        const field = inp.dataset.field;
+        let val = inp.value;
+        if(field==="category"){
+          const bp = DATA.itemSetup[idx].baseProduct;
+          if(bp){
+            if(val) DATA.baseProductCategories[bp] = val;
+            else delete DATA.baseProductCategories[bp];
+          }
+          return;
+        }
+        if(field==="conversionFactor"){ val = val===""? null : Number(val); }
+        DATA.itemSetup[idx][field] = val;
+      });
+      persist("Item Setup saved");
+    });
+  }
+
+  if(currentTab==="recipes"){
+    document.getElementById("addRecipeRow").addEventListener("click", ()=>{
+      const comp = document.getElementById("newRecComposite").value.trim();
+      const ing = document.getElementById("newRecIngredient").value.trim();
+      const pctRaw = document.getElementById("newRecPercent").value;
+      const fixedRaw = document.getElementById("newRecFixed").value;
+      if(!comp || !ing){ toast("Composite and ingredient are both required"); return; }
+      if(!pctRaw && !fixedRaw){ toast("Enter either a % or a fixed qty"); return; }
+      DATA.recipes.push({
+        compositeItem: comp, ingredientItem: ing,
+        percent: pctRaw ? Number(pctRaw)/100 : null,
+        fixedQty: fixedRaw ? Number(fixedRaw) : null,
+      });
+      persist("Product mix line added");
+    });
+    document.querySelectorAll("[data-del-recipe]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const i = Number(b.dataset.delRecipe);
+        DATA.recipes.splice(i,1);
+        persist("Product mix line removed");
+      });
+    });
+    document.getElementById("saveRecipes").addEventListener("click", ()=>{
+      const rowsByIdx = {};
+      document.querySelectorAll("#main [data-recidx]").forEach(inp=>{
+        const idx = Number(inp.dataset.recidx);
+        if(!rowsByIdx[idx]) rowsByIdx[idx] = {};
+        rowsByIdx[idx][inp.dataset.field] = inp.value;
+      });
+      Object.keys(rowsByIdx).forEach(idxKey=>{
+        const idx = Number(idxKey);
+        const rec = DATA.recipes[idx];
+        if(!rec) return;
+        const vals = rowsByIdx[idx];
+        rec.compositeItem = (vals.compositeItem||"").trim();
+        rec.ingredientItem = (vals.ingredientItem||"").trim();
+        const pctRaw = vals.percent;
+        const fixedRaw = vals.fixedQty;
+        if(pctRaw !== "" && pctRaw !== undefined){
+          rec.percent = Number(pctRaw)/100;
+          rec.fixedQty = null;
+        } else if(fixedRaw !== "" && fixedRaw !== undefined){
+          rec.fixedQty = Number(fixedRaw);
+          rec.percent = null;
+        } else {
+          rec.percent = null;
+          rec.fixedQty = null;
+        }
+      });
+      persist("Product Mixes saved");
+    });
+  }
+
+  if(currentTab==="salesdata"){
+    document.getElementById("salesUploadDateInput").addEventListener("change", (e)=>{
+      salesUploadDate = e.target.value || new Date().toISOString().slice(0,10);
+    });
+    if(!salesPendingA) wireSalesDropzone("salesA");
+    if(!salesPendingB) wireSalesDropzone("salesB");
+    document.querySelectorAll("[data-clear-pending]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        if(b.dataset.clearPending==="salesA") salesPendingA = null; else salesPendingB = null;
+        render();
+      });
+    });
+    const submitBtn = document.getElementById("salesUploadSubmit");
+    if(submitBtn) submitBtn.addEventListener("click", submitSalesUpload);
+  }
+
+  if(currentTab==="purchase"){
+    document.getElementById("purchDraftDate").addEventListener("change", (e)=>{
+      purchaseDraftDate = e.target.value;
+      render();
+    });
+    document.getElementById("purchDateFilter").addEventListener("change", (e)=>{
+      purchaseDateFilter = e.target.value;
+      render();
+    });
+    document.getElementById("addDraftLine").addEventListener("click", ()=>{
+      if(!purchaseDraftDate){ toast("Pick a date first"); return; }
+      const bp = document.getElementById("draftLineBase").value.trim();
+      const qty = document.getElementById("draftLineQty").value;
+      const cost = document.getElementById("draftLineCost").value;
+      if(!bp || !cost){ toast("Base product and cost are both required"); return; }
+      const line = {baseProduct:bp, cost:Number(cost)};
+      if(qty!==""){ line.qty = Number(qty); }
+      purchaseDraftLines.push(line);
+      render();
+    });
+    document.querySelectorAll("[data-del-draft]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const i = Number(b.dataset.delDraft);
+        purchaseDraftLines.splice(i,1);
+        render();
+      });
+    });
+    const clearBtn = document.getElementById("clearPurchaseDraft");
+    if(clearBtn){
+      clearBtn.addEventListener("click", ()=>{
+        purchaseDraftLines = [];
+        render();
+      });
+    }
+    const submitBtn = document.getElementById("submitPurchaseBatch");
+    if(submitBtn){
+      submitBtn.addEventListener("click", ()=>{
+        if(!purchaseDraftDate){ toast("Pick a date first"); return; }
+        if(!purchaseDraftLines.length){ toast("Add at least one line first"); return; }
+        const count = purchaseDraftLines.length;
+        const dateSaved = purchaseDraftDate;
+        purchaseDraftLines.forEach(l=>{
+          const entry = {date:dateSaved, baseProduct:l.baseProduct, cost:l.cost};
+          if(l.qty!==undefined) entry.qty = l.qty;
+          if(currentUser) entry.loggedBy = currentUser.name;
+          DATA.purchaseCosts.push(entry);
+        });
+        purchaseDraftLines = [];
+        persist("Submitted " + count + " purchase" + (count===1?"":"s") + " for " + dateSaved);
+      });
+    }
+    document.querySelectorAll("[data-del-purchase]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const i = Number(b.dataset.delPurchase);
+        DATA.purchaseCosts.splice(i,1);
+        persist("Purchase entry removed");
+      });
+    });
+  }
+
+  if(currentTab==="sageimport"){
+    document.getElementById("sageDateFilter").addEventListener("change", (e)=>{ sageDateFilter = e.target.value; render(); });
+    document.getElementById("toggleFilter").addEventListener("change", (e)=>{ sageOnlyPurchasedOnDate = e.target.checked; render(); });
+    document.getElementById("downloadSageCsv").addEventListener("click", ()=>{
+      const all = sageImportComputed(sageDateFilter);
+      const rows = sageOnlyPurchasedOnDate ? all.filter(r=>r.purchasedOnDate) : all;
+      if(!rows.length){ toast("Nothing to export yet"); return; }
+      const csv = "Item Code,Average Cost,Quantity On Hand\n" + rows.map(r=>[toCsvField(r.itemCode), r.averageCost, r.quantityOnHand].join(",")).join("\n");
+      browserDownload("sage_import_"+(sageDateFilter||"all")+".csv", csv, "text/csv");
+      toast("Download started");
+    });
+  }
+
+  if(currentTab==="stocktake"){
+    document.getElementById("stockTakeDateInput").addEventListener("change", (e)=>{
+      stockTakeDate = e.target.value;
+      render();
+    });
+    document.getElementById("stockCategorySelect").addEventListener("change", (e)=>{
+      stockCategoryFilter = e.target.value;
+      render();
+    });
+    const archiveFilterEl = document.getElementById("stockArchiveDateFilter");
+    if(archiveFilterEl){
+      archiveFilterEl.addEventListener("change", (e)=>{
+        stockArchiveDateFilter = e.target.value;
+        render();
+      });
+    }
+    const submitStockBtn = document.getElementById("submitStockTake");
+    if(submitStockBtn){
+      submitStockBtn.addEventListener("click", ()=>{
+        if(!stockTakeDate){ toast("Pick a date first"); return; }
+        const inputs = document.querySelectorAll("#main [data-stock-bp]");
+        let count = 0;
+        inputs.forEach(inp=>{
+          const bp = inp.dataset.stockBp;
+          const val = inp.value;
+          // upsert: drop any existing record for this exact (date, baseProduct) pair, then re-add if non-empty
+          DATA.stockTakes = DATA.stockTakes.filter(r=> !(r.date===stockTakeDate && r.baseProduct===bp));
+          if(val !== ""){
+            const entry = {date:stockTakeDate, baseProduct:bp, amount:Number(val)};
+            if(currentUser) entry.loggedBy = currentUser.name;
+            DATA.stockTakes.push(entry);
+            count++;
+          }
+        });
+        persist("Stock take saved for " + stockCategoryFilter + " on " + stockTakeDate + " (" + count + " entered)");
+      });
+    }
+    document.querySelectorAll("[data-del-stocktake]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const i = Number(b.dataset.delStocktake);
+        DATA.stockTakes.splice(i,1);
+        persist("Stock take entry removed");
+      });
+    });
+  }
+
+  if(currentTab==="backup"){
+    document.getElementById("downloadBackup").addEventListener("click", ()=>{
+      const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
+      const data = JSON.stringify(DATA, null, 2);
+      browserDownload("daily_fruit_backup_"+stamp+".json", data, "application/json");
+      toast("Backup downloaded");
+    });
+    document.getElementById("restoreBackup").addEventListener("click", ()=>{
+      const input = document.getElementById("restoreFileInput");
+      const file = input.files && input.files[0];
+      if(!file){ toast("Choose a backup file first"); return; }
+      const reader = new FileReader();
+      reader.onload = ()=>{
+        let parsed;
+        try{ parsed = JSON.parse(reader.result); }
+        catch(e){ toast("That file isn't valid JSON"); return; }
+        const required = ["salesA","salesB","itemSetup","recipes","procurementPlan","purchaseCosts","baseProductCategories"];
+        const missing = required.filter(k=> !(k in parsed));
+        if(missing.length){ toast("That file is missing: " + missing.join(", ")); return; }
+        DATA = applyDataDefaults(parsed);
+        // if the logged-in user doesn't exist (or has a different role) in the restored data, log out rather than keep stale access
+        if(currentUser && !DATA.users.some(u=>u.name===currentUser.name && u.role===currentUser.role)){
+          currentUser = null;
+          try{ sessionStorage.removeItem("dailyFruitUser"); }catch(e){}
+        }
+        persist("Restored from backup");
+      };
+      reader.onerror = ()=> toast("Could not read that file");
+      reader.readAsText(file);
+    });
+  }
+
+  if(currentTab==="users"){
+    document.getElementById("addUserBtn").addEventListener("click", ()=>{
+      const name = document.getElementById("newUserName").value.trim();
+      const pin = document.getElementById("newUserPin").value.trim();
+      const role = document.getElementById("newUserRole").value;
+      if(!name || !pin){ toast("Name and PIN are both required"); return; }
+      if((DATA.users||[]).some(u=>u.name.toLowerCase()===name.toLowerCase())){ toast("A user with that name already exists"); return; }
+      if(!DATA.users) DATA.users = [];
+      DATA.users.push({name, pin, role});
+      persist("Added " + name);
+    });
+    document.getElementById("saveUsersBtn").addEventListener("click", ()=>{
+      document.querySelectorAll("#main [data-idx]").forEach(inp=>{
+        const idx = Number(inp.dataset.idx);
+        const field = inp.dataset.field;
+        if(DATA.users[idx]) DATA.users[idx][field] = inp.value;
+      });
+      // keep this session's own access in sync if its role/pin was just edited
+      if(currentUser){
+        const stillMe = DATA.users.find(u=>u.name===currentUser.name);
+        if(stillMe){
+          currentUser.role = stillMe.role;
+          try{ sessionStorage.setItem("dailyFruitUser", JSON.stringify(currentUser)); }catch(e){}
+        }
+      }
+      persist("Users updated");
+    });
+    document.querySelectorAll("[data-del-user]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const i = Number(b.dataset.delUser);
+        const removed = DATA.users[i];
+        if(currentUser && removed && removed.name===currentUser.name){
+          toast("You can't remove the user you're currently logged in as");
+          return;
+        }
+        DATA.users.splice(i,1);
+        persist("User removed");
+      });
+    });
+  }
+
+// Both Pyroca and DF Veg must be staged for the report date before Submit commits anything —
+// this stops a lone file (or a stale one left over from a previous date) from silently going live
+// on its own, and makes the two-company upload an explicit, deliberate action.
+function stageSalesCsvRows(rows, entityKey, filename){
+  const pending = {filename, rows};
+  if(entityKey==="salesA") salesPendingA = pending; else salesPendingB = pending;
+  render();
+}
+
+function submitSalesUpload(){
+  if(!salesPendingA || !salesPendingB){ toast("Both Pyroca and DF Veg need a file staged before you can submit"); return; }
+  DATA.salesA = salesPendingA.rows;
+  DATA.salesB = salesPendingB.rows;
+  const known = new Set(DATA.itemSetup.map(it=>it.item));
+  let added = 0;
+  const combinedNow = new Set([...DATA.salesA, ...DATA.salesB].map(r=>r.item));
+  combinedNow.forEach(item=>{
+    if(!known.has(item)){
+      const p = parseItem(item);
+      DATA.itemSetup.push({item, itemCode:p.code, description:p.description, sellingUnit:p.unit, baseProduct:null, procurementUnit:null, conversionFactor:null});
+      known.add(item);
+      added++;
+    }
+  });
+  if(added) DATA.itemSetup.sort((a,b)=> a.item.localeCompare(b.item));
+  archiveSalesSnapshot(salesUploadDate); // build up the multi-day demand history Calculated Holdings relies on
+  const msg = "Item Sales for " + salesUploadDate + " submitted — Pyroca: " + salesPendingA.filename + " (" + salesPendingA.rows.length + "), DF Veg: " + salesPendingB.filename + " (" + salesPendingB.rows.length + ")" + (added ? (", " + added + " new item(s) added to Item Setup") : "");
+  salesPendingA = null;
+  salesPendingB = null;
+  persist(msg);
+}
+
+function wireSalesDropzone(entityKey){
+  const dz = document.getElementById(entityKey + "Dropzone");
+  const input = document.getElementById(entityKey + "FileInput");
+  if(!dz || !input) return;
+  const handleFile = (file)=>{
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const rows = parseSalesCsvText(String(reader.result));
+      if(!rows.length){ toast("That file has no rows we could read — expected Item, Qty Sold, Total Cost, Total Selling"); return; }
+      stageSalesCsvRows(rows, entityKey, file.name);
+    };
+    reader.onerror = ()=> toast("Could not read that file");
+    reader.readAsText(file);
+  };
+  dz.addEventListener("dragover", (e)=>{ e.preventDefault(); dz.classList.add("dragover"); });
+  dz.addEventListener("dragleave", ()=>{ dz.classList.remove("dragover"); });
+  dz.addEventListener("drop", (e)=>{
+    e.preventDefault();
+    dz.classList.remove("dragover");
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    handleFile(file);
+  });
+  input.addEventListener("change", (e)=>{
+    const file = e.target.files && e.target.files[0];
+    handleFile(file);
+    input.value = ""; // allow re-selecting the same filename later
+  });
+}
+
+}
+
+async function boot(){
+  try{
+    DATA = await loadData();
+    dataLoaded = true;
+    dataLoadError = null;
+    // now that real data is in, re-validate the tentatively-restored session: a user removed
+    // (or whose role changed) elsewhere since this session logged in shouldn't keep stale access
+    if(currentUser && !DATA.users.some(u=>u.name===currentUser.name && u.role===currentUser.role)){
+      currentUser = null;
+      try{ sessionStorage.removeItem("dailyFruitUser"); }catch(e){}
+    }
+  }catch(e){
+    dataLoadError = (e && e.message) ? e.message : "Unknown error";
+  }
+  render();
+}
+boot();
+</script>
