@@ -998,8 +998,6 @@ function renderShoppingList(){
   if(shoppingCategoryFilter) rows = rows.filter(r=> (r.category||"Uncategorized")===shoppingCategoryFilter);
   if(shoppingStatusFilter) rows = rows.filter(r=> r.status===shoppingStatusFilter);
 
-  const critPct = Number(DATA.shoppingList.criticalPct)||0.25;
-  const overPct = Number(DATA.shoppingList.overstockPct)||1.5;
   const noStockTakesYet = DATA.stockTakes.length === 0;
   const today = new Date().toISOString().slice(0,10);
 
@@ -1035,17 +1033,6 @@ function renderShoppingList(){
       <div class="stat"><div class="label">No stock take</div><div class="value small" style="color:var(--muted)">${counts["No stock take"]}</div></div>
       <div class="stat"><div class="label">Missing setup</div><div class="value small" style="color:var(--muted)">${counts["Missing setup"]}</div></div>
     </div>
-    ${canManagePurchases() ? `
-    <div class="card">
-      <div class="cardhead"><div><h3>Thresholds</h3><div class="desc">Stock at or below the critical % of target is flagged Critical; at or above the overstock % is flagged Overstocked. Anything else below 100% of target is Buy.</div></div></div>
-      <div class="cardbody">
-        <div class="formgrid">
-          <div class="field"><label>Critical threshold (% of target)</label><input type="number" step="1" min="0" id="shoppingCriticalPct" value="${round2(critPct*100)}"></div>
-          <div class="field"><label>Overstock threshold (% of target)</label><input type="number" step="1" min="100" id="shoppingOverstockPct" value="${round2(overPct*100)}"></div>
-          <div><button class="btn primary" id="saveShoppingThresholds">Save thresholds</button></div>
-        </div>
-      </div>
-    </div>` : ""}
     <div class="card">
       <div class="cardhead">
         <div><h3>Base products</h3><div class="desc">${rows.length} of ${all.length} shown, most urgent first.</div></div>
@@ -1234,6 +1221,8 @@ function renderDashboard(){
   const cm = DATA.procurementPlan.coverMultiplier;
   const sb = DATA.procurementPlan.safetyBuffer;
   const historyPeriods = DATA.salesHistory.length;
+  const critPct = Number(DATA.shoppingList.criticalPct)||0.25;
+  const overPct = Number(DATA.shoppingList.overstockPct)||1.5;
 
   const categories = Array.from(new Set(allRows.map(r=> r.category || "Uncategorized"))).sort();
   const categoryFilterOptions = `<option value="">All categories</option>` +
@@ -1281,6 +1270,15 @@ function renderDashboard(){
         <div class="formgrid">
           <div class="field"><label>Default cycle length (x avg daily demand)</label><input type="number" step="0.1" id="coverMultiplier" value="${cm}"></div>
           <div class="field"><label>Default safety buffer %</label><input type="number" step="1" id="safetyBufferPct" value="${round2(sb*100)}"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Shopping List thresholds</h3><div class="desc">Stock at or below the critical % of target is flagged Critical on the Shopping List; at or above the overstock % is flagged Overstocked. Anything else below 100% of target is Buy.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Critical threshold (% of target)</label><input type="number" step="1" min="0" id="shoppingCriticalPct" value="${round2(critPct*100)}"></div>
+          <div class="field"><label>Overstock threshold (% of target)</label><input type="number" step="1" min="100" id="shoppingOverstockPct" value="${round2(overPct*100)}"></div>
         </div>
       </div>
     </div>
@@ -1735,6 +1733,7 @@ function renderStockTake(){
           <label>Filter by date</label>
           <select id="stockArchiveDateFilter">${archiveDateFilterOptions}</select>
         </div>
+        <button class="btn" id="downloadStockArchiveCsv" ${archiveGroupDates.length?"":"disabled"}>Export CSV</button>
       </div>
       <div class="cardbody" style="padding:0;">
         ${archiveGroupsHtml || `<div class="empty">No stock takes submitted yet.</div>`}
@@ -1835,16 +1834,6 @@ function wireTabEvents(){
       shoppingCategoryFilter = e.target.value;
       render();
     });
-    const saveThresholdsBtn = document.getElementById("saveShoppingThresholds");
-    if(saveThresholdsBtn){
-      saveThresholdsBtn.addEventListener("click", ()=>{
-        const critRaw = Number(document.getElementById("shoppingCriticalPct").value);
-        const overRaw = Number(document.getElementById("shoppingOverstockPct").value);
-        DATA.shoppingList.criticalPct = (critRaw>0 ? critRaw : 25)/100;
-        DATA.shoppingList.overstockPct = (overRaw>100 ? overRaw : 150)/100;
-        persist("Thresholds saved");
-      });
-    }
     document.querySelectorAll("[data-buy-tick]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         const container = btn.closest("[data-buy-row]");
@@ -1983,6 +1972,10 @@ function wireTabEvents(){
     document.getElementById("savePlanSettings").addEventListener("click", ()=>{
       DATA.procurementPlan.coverMultiplier = Number(document.getElementById("coverMultiplier").value)||1;
       DATA.procurementPlan.safetyBuffer = (Number(document.getElementById("safetyBufferPct").value)||0)/100;
+      const critRaw = Number(document.getElementById("shoppingCriticalPct").value);
+      const overRaw = Number(document.getElementById("shoppingOverstockPct").value);
+      DATA.shoppingList.criticalPct = (critRaw>0 ? critRaw : 25)/100;
+      DATA.shoppingList.overstockPct = (overRaw>100 ? overRaw : 150)/100;
       document.querySelectorAll("[data-catbuffer-input]").forEach(inp=>{
         const cat = inp.dataset.catbufferInput;
         const v = inp.value.trim();
@@ -2003,7 +1996,7 @@ function wireTabEvents(){
         if(v==="") delete DATA.productCeilings[bp];
         else DATA.productCeilings[bp] = Number(v)||0;
       });
-      persist("Cover settings saved");
+      persist("Settings saved");
     });
     document.getElementById("dashboardCategoryFilter").addEventListener("change", (e)=>{
       dashboardCategoryFilter = e.target.value;
@@ -2237,6 +2230,19 @@ function wireTabEvents(){
         persist("Stock take entry removed");
       });
     });
+    const downloadArchiveBtn = document.getElementById("downloadStockArchiveCsv");
+    if(downloadArchiveBtn){
+      downloadArchiveBtn.addEventListener("click", ()=>{
+        const rows = DATA.stockTakes.filter(r=> !stockArchiveDateFilter || r.date===stockArchiveDateFilter);
+        if(!rows.length){ toast("Nothing to export yet"); return; }
+        const sorted = rows.slice().sort((a,b)=> b.date.localeCompare(a.date) || a.baseProduct.localeCompare(b.baseProduct));
+        const csv = "Date,Base Product,Category,Stock Amount,Logged By\n" + sorted.map(r=>
+          [toCsvField(r.date), toCsvField(r.baseProduct), toCsvField(categoryFor(r.baseProduct)||"Uncategorized"), r.amount, toCsvField(r.loggedBy||"")].join(",")
+        ).join("\n");
+        browserDownload("stock_take_archive_"+(stockArchiveDateFilter||"all")+".csv", csv, "text/csv");
+        toast("Download started");
+      });
+    }
   }
 
   if(currentTab==="backup"){
