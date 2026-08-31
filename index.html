@@ -634,19 +634,84 @@ function unableEntryForDate(baseProduct, date){
   return DATA.purchaseIssues.find(p=> p.baseProduct===baseProduct && p.date===date) || null;
 }
 
+// Most recently DATED purchase entry per base product (not just first-in-array like purchaseCostMap,
+// which is a legacy MATCH()-style lookup and would actually surface the OLDEST logged cost since new
+// purchases are appended to the end of the list). This is "the best current price we know" for a base
+// product, used to keep a Product Mix's cost current any time an ingredient's price changes — not tied
+// to any single day's Sage export.
+function latestPurchaseCostMap(){
+  const latest = {};
+  for(const p of DATA.purchaseCosts){
+    if(!p.baseProduct) continue;
+    const prior = latest[p.baseProduct];
+    if(!prior || (p.date||"") >= (prior.date||"")) latest[p.baseProduct] = {cost:Number(p.cost), date:p.date||""};
+  }
+  const out = {};
+  Object.keys(latest).forEach(bp=> out[bp] = latest[bp].cost);
+  return out;
+}
+
+// Cost per unit of any Item Setup row, given a base-product cost lookup (either a specific date's
+// purchaseCostMap(), or the always-current latestPurchaseCostMap()). Directly-purchased items divide
+// their base product's cost by the conversion factor, same as before. A Product Mix (composite) item
+// has no purchase cost of its own — instead its cost is the ingredients' costs combined per the recipe
+// (% of composite, or a fixed qty per unit), so it automatically reflects the latest ingredient prices
+// without needing its own entry. Recurses for a mix-of-mixes; `visiting` guards against a circular
+// mix reference. Returns null if the cost can't be fully determined (missing a base cost somewhere
+// in the chain), rather than silently under-costing the mix.
+function itemCostPerUnit(itemName, pm, visiting){
+  visiting = visiting || new Set();
+  if(visiting.has(itemName)) return null;
+  const it = DATA.itemSetup.find(x=>x.item===itemName);
+  if(it && it.baseProduct && it.conversionFactor && it.baseProduct in pm){
+    return round2(Number(pm[it.baseProduct])/Number(it.conversionFactor));
+  }
+  const lines = DATA.recipes.filter(r=> r.compositeItem===itemName && r.ingredientItem);
+  if(!lines.length) return null;
+  visiting.add(itemName);
+  let total = 0;
+  for(const rec of lines){
+    const factor = (rec.percent!==null && rec.percent!==undefined && rec.percent!=="") ? Number(rec.percent) : (Number(rec.fixedQty)||0);
+    const ingCost = itemCostPerUnit(rec.ingredientItem, pm, visiting);
+    if(ingCost===null){ visiting.delete(itemName); return null; }
+    total += factor*ingCost;
+  }
+  visiting.delete(itemName);
+  return round2(total);
+}
+
 function sageImportComputed(date){
   const derived = itemSetupDerived();
   const pm = purchaseCostMap(date);
   return derived.map(it=>{
-    let newCost = null;
-    if(it.baseProduct && it.baseProduct in pm && it.conversionFactor){
-      newCost = round2(pm[it.baseProduct]/Number(it.conversionFactor));
-    }
+    const newCost = itemCostPerUnit(it.item, pm);
     return {
       itemCode: it.itemCode, averageCost: newCost,
       quantityOnHand: 0,
       item: it.item, baseProduct: it.baseProduct, purchasedOnDate: newCost !== null,
     };
+  });
+}
+
+// Every distinct Product Mix (composite item), with its currently-computed cost per unit — based on
+// the latest known cost of each ingredient, not scoped to any one day — plus a breakdown so it's clear
+// exactly which ingredient prices it's built from, and a flag when an ingredient has no cost yet.
+function compositeMixCosts(){
+  const pm = latestPurchaseCostMap();
+  const names = Array.from(new Set(DATA.recipes.map(r=>r.compositeItem).filter(Boolean)));
+  return names.map(compositeItem=>{
+    const lines = DATA.recipes.filter(r=> r.compositeItem===compositeItem && r.ingredientItem);
+    const breakdown = lines.map(rec=>{
+      const factor = (rec.percent!==null && rec.percent!==undefined && rec.percent!=="") ? Number(rec.percent) : (Number(rec.fixedQty)||0);
+      const ingCost = itemCostPerUnit(rec.ingredientItem, pm);
+      return {
+        ingredientItem: rec.ingredientItem, isPercent: (rec.percent!==null && rec.percent!==undefined && rec.percent!==""),
+        factor, ingredientCost: ingCost, contribution: ingCost!==null ? round2(factor*ingCost) : null,
+      };
+    });
+    const complete = breakdown.every(b=> b.contribution!==null);
+    const cost = complete ? round2(breakdown.reduce((s,b)=>s+b.contribution,0)) : null;
+    return {compositeItem, cost, breakdown, complete};
   });
 }
 
@@ -1396,6 +1461,7 @@ function renderRecipes(){
   const derived = itemSetupDerived();
   const qtyMap = {}; derived.forEach(it=>qtyMap[it.item]=it.combinedQty);
   const itemTexts = allItemTexts();
+  const mixCosts = compositeMixCosts();
 
   const rows = DATA.recipes.map((rec,i)=>{
     const compQty = qtyMap[rec.compositeItem] || 0;
@@ -1419,10 +1485,36 @@ function renderRecipes(){
     </tr>`;
   }).join("");
 
+  const mixCostRows = mixCosts.map(m=>{
+    const made = m.breakdown.map(b=>{
+      const label = b.isPercent ? (Math.round(b.factor*100)+"%") : ("×"+fmtNum(b.factor,4));
+      const costTxt = b.ingredientCost!==null ? money(b.ingredientCost) : "cost unknown";
+      const contribTxt = b.contribution!==null ? (" = "+money(b.contribution)) : "";
+      const style = b.contribution===null ? ` style="color:var(--critical);"` : "";
+      return `<span${style}>${esc(b.ingredientItem)} (${label} × ${costTxt}${contribTxt})</span>`;
+    }).join(", ");
+    return `<tr>
+      <td>${esc(m.compositeItem)}</td>
+      <td class="num" style="font-weight:600;">${m.cost!==null ? money(m.cost) : "—"}</td>
+      <td class="helptext">${made || "—"}${m.complete?"":` ${chip("Incomplete — missing an ingredient cost","critical")}`}</td>
+    </tr>`;
+  }).join("");
+
   return `
     <div class="pagehead">
       <div><h2>Product Mixes</h2><p>For products assembled in-house from other stock (e.g. Roast Veg Mix). Ingredient demand flows automatically into that ingredient's own Item Setup row.</p></div>
       <div class="actions"><button class="btn primary" id="saveRecipes">Save changes</button></div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Product mix costs</h3><div class="desc">Cost per unit for each mix, built from the current known cost of its ingredients (their most recently logged Purchase Cost) — recalculates automatically the moment you log a new purchase for any ingredient, no manual update needed. Also feeds the Sage CSV export.</div></div></div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;">
+          <table>
+            <thead><tr><th>Composite item (mix)</th><th class="num">Cost / unit</th><th>Made from</th></tr></thead>
+            <tbody>${mixCostRows || `<tr><td colspan="3" class="empty">No product mixes yet — add one below.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
     </div>
     ${datalistOptions("itemsDL", itemTexts)}
     <div class="card">
@@ -1653,7 +1745,7 @@ function renderSageImport(){
 
   return `
     <div class="pagehead">
-      <div><h2>Sage CSV</h2><p>Average Cost is pulled from Purchase Costs entries logged on the date selected below; Quantity On Hand is exported as 0.</p></div>
+      <div><h2>Sage CSV</h2><p>Average Cost is pulled from Purchase Costs entries logged on the date selected below; Quantity On Hand is exported as 0. A Product Mix (composite) item's cost is built from its ingredients' costs on that same date instead — see Product Mixes for the full breakdown.</p></div>
       <div class="actions">
         <div class="field" style="min-width:170px;">
           <label>Purchase date</label>
