@@ -1434,6 +1434,7 @@ function renderItemSetup(){
       <td><input class="rowinput" data-field="procurementUnit" data-idx="${idx}" value="${isMix?"":esc(it.procurementUnit||"")}" ${isMix?"disabled":""}></td>
       <td><input class="rowinput num" data-field="conversionFactor" data-idx="${idx}" value="${isMix||it.conversionFactor===null||it.conversionFactor===undefined?"":it.conversionFactor}" style="max-width:90px;" ${isMix?"disabled":""}></td>
       <td class="num">${it.rawNeeded!==null ? fmtNum(it.rawNeeded) : "—"}</td>
+      <td><button class="delbtn" data-del-item="${idx}" title="Delete item">✕</button></td>
     </tr>`;
   }).join("");
 
@@ -1470,8 +1471,8 @@ function renderItemSetup(){
       </div>
       <div class="cardbody" style="padding:0;">
         <div class="tablewrap" style="border:none;border-radius:0;max-height:640px;overflow-y:auto;"><table>
-          <thead><tr><th>Item</th><th class="num">Qty sold</th><th class="num">From mixes</th><th>Base product</th><th>Category</th><th>Procurement unit</th><th>Qty per unit</th><th class="num">Units needed</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="8" class="empty">No items match your search/filter.</td></tr>`}</tbody>
+          <thead><tr><th>Item</th><th class="num">Qty sold</th><th class="num">From mixes</th><th>Base product</th><th>Category</th><th>Procurement unit</th><th>Qty per unit</th><th class="num">Units needed</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="9" class="empty">No items match your search/filter.</td></tr>`}</tbody>
         </table></div>
       </div>
     </div>`;
@@ -2249,6 +2250,16 @@ function wireTabEvents(){
         }
       });
       persist("Item Setup saved");
+    });
+    document.querySelectorAll("[data-del-item]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const idx = Number(b.dataset.delItem);
+        const it = DATA.itemSetup[idx];
+        if(!it) return;
+        if(!confirm(`Delete "${it.item}" from Item Setup?\n\nThis removes it immediately — it won't wait for Save changes. If it's still coming through in a Sales report, it'll just get added back automatically next time you upload one.`)) return;
+        DATA.itemSetup.splice(idx,1);
+        persist("Deleted " + it.item);
+      });
     });
   }
 
