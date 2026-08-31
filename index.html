@@ -121,6 +121,7 @@
   td.num, th.num{text-align:right; font-family:"IBM Plex Mono",monospace;}
   .rowinput{width:100%; min-width:90px; padding:5px 7px; font-size:12.5px; border-radius:5px; border:1px solid var(--line); background:var(--surface);}
   .rowinput:focus-visible{outline:2px solid var(--accent);}
+  .rowinput:disabled{background:var(--surface-2); color:var(--muted); cursor:not-allowed;}
 
   .chip{display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:99px; font-size:11.5px; font-weight:600; white-space:nowrap;}
   .chip.good{background:var(--good-soft); color:var(--good);}
@@ -963,9 +964,18 @@ function categoryFor(baseProduct){
   if(!baseProduct) return "";
   return DATA.baseProductCategories[baseProduct] || "";
 }
+// Category is normally shared by every variant of a Base Product (see categoryFor above). A Product
+// Mix has no Base Product of its own, so it can't hang its category off that shared lookup — instead
+// it keeps its own category directly on the Item Setup row (it.category), set the moment "Mixes" (or
+// any other category) is typed into a row that has no Base Product.
+function effectiveCategoryFor(it){
+  return it.baseProduct ? categoryFor(it.baseProduct) : (it.category || "");
+}
 function distinctCategories(){
   const set = new Set();
   Object.values(DATA.baseProductCategories).forEach(c=> c && set.add(c));
+  DATA.itemSetup.forEach(it=>{ if(!it.baseProduct && it.category) set.add(it.category); });
+  set.add("Mixes"); // always offered as a ready-made option for a Product Mix item, even before one's been used
   return Array.from(set).sort();
 }
 function allItemTexts(){
@@ -1402,26 +1412,27 @@ function renderDashboard(){
 function renderItemSetup(){
   const derived = itemSetupDerived();
   const q = itemSearch.trim().toLowerCase();
-  const categories = Array.from(new Set(derived.map(it=> categoryFor(it.baseProduct) || "Uncategorized"))).sort();
+  const categories = Array.from(new Set(derived.map(it=> effectiveCategoryFor(it) || "Uncategorized"))).sort();
   const categoryFilterOptions = `<option value="">All categories</option>` +
     categories.map(c=>`<option value="${esc(c)}" ${c===itemSetupCategoryFilter?"selected":""}>${esc(c)}</option>`).join("");
   let filtered = q ? derived.filter(it => it.item.toLowerCase().includes(q) || (it.baseProduct||"").toLowerCase().includes(q)) : derived;
   if(itemSetupCategoryFilter){
-    filtered = filtered.filter(it => (categoryFor(it.baseProduct) || "Uncategorized") === itemSetupCategoryFilter);
+    filtered = filtered.filter(it => (effectiveCategoryFor(it) || "Uncategorized") === itemSetupCategoryFilter);
   }
   const setupCount = derived.filter(it=>it.baseProduct).length;
 
   const rows = filtered.map(it=>{
     const idx = DATA.itemSetup.indexOf(DATA.itemSetup.find(x=>x.item===it.item));
+    const isMix = effectiveCategoryFor(it).trim().toLowerCase()==="mixes";
     return `
     <tr>
       <td style="max-width:260px;">${esc(it.item)}</td>
       <td class="num">${fmtNum(it.combinedQty)}</td>
       <td class="num">${it.recipeQty ? fmtNum(it.recipeQty) : "—"}</td>
-      <td><input class="rowinput" data-field="baseProduct" data-idx="${idx}" value="${esc(it.baseProduct||"")}" list="baseProductsDL"></td>
-      <td><input class="rowinput" data-field="category" data-idx="${idx}" value="${esc(categoryFor(it.baseProduct))}" list="categoriesDL" placeholder="e.g. Veg"></td>
-      <td><input class="rowinput" data-field="procurementUnit" data-idx="${idx}" value="${esc(it.procurementUnit||"")}"></td>
-      <td><input class="rowinput num" data-field="conversionFactor" data-idx="${idx}" value="${it.conversionFactor===null||it.conversionFactor===undefined?"":it.conversionFactor}" style="max-width:90px;"></td>
+      <td><input class="rowinput" data-field="baseProduct" data-idx="${idx}" value="${isMix?"":esc(it.baseProduct||"")}" list="baseProductsDL" ${isMix?"disabled":""}></td>
+      <td><input class="rowinput" data-field="category" data-idx="${idx}" value="${esc(effectiveCategoryFor(it))}" list="categoriesDL" placeholder="e.g. Veg or Mixes"></td>
+      <td><input class="rowinput" data-field="procurementUnit" data-idx="${idx}" value="${isMix?"":esc(it.procurementUnit||"")}" ${isMix?"disabled":""}></td>
+      <td><input class="rowinput num" data-field="conversionFactor" data-idx="${idx}" value="${isMix||it.conversionFactor===null||it.conversionFactor===undefined?"":it.conversionFactor}" style="max-width:90px;" ${isMix?"disabled":""}></td>
       <td class="num">${it.rawNeeded!==null ? fmtNum(it.rawNeeded) : "—"}</td>
     </tr>`;
   }).join("");
@@ -1450,7 +1461,7 @@ function renderItemSetup(){
     </div>
     <div class="card">
       <div class="cardhead">
-        <div><h3>Items</h3><div class="desc">Edit the input columns, then Save changes once. Category applies to every variant of that Base Product.</div></div>
+        <div><h3>Items</h3><div class="desc">Edit the input columns, then Save changes once. Category applies to every variant of that Base Product. For a Product Mix (assembled from other stock, not bought directly), set Category to "Mixes" — Base Product, Procurement Unit and Qty per Unit don't apply and blank out automatically.</div></div>
         <div class="field" style="min-width:180px;">
           <label>Filter by category</label>
           <select id="itemSetupCategoryFilterSel">${categoryFilterOptions}</select>
@@ -2184,6 +2195,24 @@ function wireTabEvents(){
       DATA.itemSetup.sort((a,b)=> a.item.localeCompare(b.item));
       persist("Added " + text);
     });
+    // A Product Mix has no Base Product/Procurement Unit/Qty per Unit of its own — the moment a row's
+    // Category is set to "Mixes" (even before Save is clicked), grey out and blank those three fields
+    // right there in that row so nothing gets typed into fields that don't apply.
+    document.querySelectorAll('[data-field="category"][data-idx]').forEach(catInput=>{
+      const applyMixState = ()=>{
+        const idx = catInput.dataset.idx;
+        const isMix = catInput.value.trim().toLowerCase()==="mixes";
+        document.querySelectorAll(`[data-idx="${idx}"]`).forEach(sib=>{
+          const f = sib.dataset.field;
+          if(f==="baseProduct" || f==="procurementUnit" || f==="conversionFactor"){
+            sib.disabled = isMix;
+            if(isMix) sib.value = "";
+          }
+        });
+      };
+      catInput.addEventListener("input", applyMixState);
+      applyMixState(); // reflect rows already saved as Mixes as soon as the tab renders
+    });
     document.getElementById("saveItemSetup").addEventListener("click", ()=>{
       // Base Product is listed before Category in each row, so by the time a category
       // input is processed, that row's (possibly just-edited) baseProduct is already current.
@@ -2192,15 +2221,32 @@ function wireTabEvents(){
         const field = inp.dataset.field;
         let val = inp.value;
         if(field==="category"){
+          const val2 = val.trim();
           const bp = DATA.itemSetup[idx].baseProduct;
-          if(bp){
-            if(val) DATA.baseProductCategories[bp] = val;
+          if(val2.toLowerCase()==="mixes"){
+            // Its own field, not the shared per-Base-Product lookup — a mix has no Base Product to hang it off.
+            DATA.itemSetup[idx].category = "Mixes";
+          } else if(bp){
+            if(val2) DATA.baseProductCategories[bp] = val2;
             else delete DATA.baseProductCategories[bp];
+            delete DATA.itemSetup[idx].category; // linked to a real Base Product again — drop any leftover override
+          } else {
+            if(val2) DATA.itemSetup[idx].category = val2;
+            else delete DATA.itemSetup[idx].category;
           }
           return;
         }
         if(field==="conversionFactor"){ val = val===""? null : Number(val); }
         DATA.itemSetup[idx][field] = val;
+      });
+      // Belt-and-braces: whatever the inputs said, a row categorized as Mixes never keeps a Base
+      // Product/Procurement Unit/Conversion Factor — it's assembled from other stock, not bought directly.
+      DATA.itemSetup.forEach(it=>{
+        if((it.category||"").toLowerCase()==="mixes"){
+          it.baseProduct = "";
+          it.procurementUnit = "";
+          it.conversionFactor = null;
+        }
       });
       persist("Item Setup saved");
     });
