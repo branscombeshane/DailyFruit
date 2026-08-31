@@ -140,6 +140,7 @@
   .banner{display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:9px; font-size:13px; margin-bottom:16px;}
   .banner.info{background:var(--accent-soft); color:var(--accent);}
   .banner.warn{background:var(--warn-soft); color:var(--warn);}
+  .banner.critical{background:var(--critical-soft); color:var(--critical); justify-content:space-between; flex-wrap:wrap;}
 
   .formgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; align-items:end;}
   .empty{padding:30px 10px; text-align:center; color:var(--muted); font-size:13px;}
@@ -266,6 +267,7 @@ function applyDataDefaults(d){
     // Change this immediately from the Users tab once logged in.
     d.users = [{name:"Owner", pin:"1234", role:"owner"}];
   }
+  if(d.syncVersion===undefined) d.syncVersion = null; // backward-compatible default for backups/backends predating the two-tabs-open safety net
   return d;
 }
 
@@ -284,6 +286,11 @@ function browserDownload(filename, dataStr, mime){
 let DATA = emptyDataShape();
 let dataLoaded = false;
 let dataLoadError = null;
+// set when a bulk save (Item Setup / Product Mixes / Settings / Users) is refused because someone
+// else saved first — see persist() and handleFullSave_ in Code.gs. Stays set (and the banner stays
+// up) across tab switches until the page is reloaded, since that's the only safe way to get back in
+// sync — sticking around is the point, a toast would be too easy to miss for this.
+let saveConflict = null;
 // tentatively restored here (before real data has loaded); boot() re-validates it against the
 // real DATA.users once the fetch completes, since the empty starting shape above can't tell
 // whether this session's user still exists or still has the same role
@@ -730,6 +737,12 @@ async function loadData(){
   return applyDataDefaults(fresh);
 }
 
+// Full-object save — used by Item Setup, Product Mixes, Settings, Users, Sales upload, Stock Take,
+// and Restore. Sends the WHOLE DATA object; the backend replaces the WHOLE corresponding sheet(s)
+// from it. Fine when one person edits at a time, which is why it carries the version check (see
+// Code.gs's handleFullSave_): if someone else saved since this tab loaded, the save is refused
+// rather than silently overwriting their change. Quick Buy / Shopping List purchase logging does
+// NOT go through this — see persistPurchaseAction below for why.
 async function persist(successMsg){
   try{
     // Content-Type: text/plain keeps this a CORS "simple request" — Apps Script Web Apps don't
@@ -739,6 +752,36 @@ async function persist(successMsg){
       method: "POST",
       headers: {"Content-Type": "text/plain;charset=utf-8"},
       body: JSON.stringify(DATA),
+    });
+    let result = null;
+    try{ result = await res.json(); }catch(e){ /* fall through to the failure toast below */ }
+    if(res.ok && result && result.ok){
+      saveConflict = null;
+      if(result.syncVersion) DATA.syncVersion = result.syncVersion; // so this tab's NEXT save compares against its own last write, not the stale one it loaded with
+      toast(successMsg || "Saved");
+    } else if(result && result.conflict){
+      saveConflict = result.error || "This data changed elsewhere since you loaded it — reload before saving again.";
+      toast("Not saved — someone else's changes would be overwritten");
+    } else {
+      toast("Could not save" + (result && result.error ? (": " + result.error) : "") + " — check your connection and try again");
+    }
+  }catch(e){
+    toast("Could not save — check your connection and try again");
+  }
+  render();
+}
+
+// Purchase logging (Quick Buy, and Shopping List's inline "mark as bought"/delete) — sends just the
+// one row being added/changed/removed. The backend touches only that row (see Code.gs's
+// handlePurchaseAction_), so two people logging purchases around the same time — e.g. two buyers at
+// the market — never overwrite each other and never need to reload. No version check applies here;
+// there's nothing for it to conflict with.
+async function persistPurchaseAction(payload, successMsg){
+  try{
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: {"Content-Type": "text/plain;charset=utf-8"},
+      body: JSON.stringify(payload),
     });
     let result = null;
     try{ result = await res.json(); }catch(e){ /* fall through to the failure toast below */ }
@@ -871,18 +914,25 @@ function render(){
     }
     renderNav();
     const main = document.getElementById("main");
-    if(currentTab==="shoppinglist") main.innerHTML = renderShoppingList();
-    else if(currentTab==="quickbuy") main.innerHTML = renderQuickBuy();
-    else if(currentTab==="dashboard") main.innerHTML = renderDashboard();
-    else if(currentTab==="itemsetup") main.innerHTML = renderItemSetup();
-    else if(currentTab==="recipes") main.innerHTML = renderRecipes();
-    else if(currentTab==="salesdata") main.innerHTML = renderSalesData();
-    else if(currentTab==="purchase") main.innerHTML = renderPurchase();
-    else if(currentTab==="sageimport") main.innerHTML = renderSageImport();
-    else if(currentTab==="stocktake") main.innerHTML = renderStockTake();
-    else if(currentTab==="users") main.innerHTML = renderUsers();
-    else if(currentTab==="backup") main.innerHTML = renderBackup();
+    let pageHtml = "";
+    if(currentTab==="shoppinglist") pageHtml = renderShoppingList();
+    else if(currentTab==="quickbuy") pageHtml = renderQuickBuy();
+    else if(currentTab==="dashboard") pageHtml = renderDashboard();
+    else if(currentTab==="itemsetup") pageHtml = renderItemSetup();
+    else if(currentTab==="recipes") pageHtml = renderRecipes();
+    else if(currentTab==="salesdata") pageHtml = renderSalesData();
+    else if(currentTab==="purchase") pageHtml = renderPurchase();
+    else if(currentTab==="sageimport") pageHtml = renderSageImport();
+    else if(currentTab==="stocktake") pageHtml = renderStockTake();
+    else if(currentTab==="users") pageHtml = renderUsers();
+    else if(currentTab==="backup") pageHtml = renderBackup();
+    // shown above whichever page is current, on every tab, until reloaded — a bulk save (Item Setup /
+    // Product Mixes / Settings / Users) can be refused from any of those pages, and this needs to stay
+    // visible regardless of which one the user wanders to afterward
+    main.innerHTML = (saveConflict ? renderSaveConflictBanner(saveConflict) : "") + pageHtml;
     wireTabEvents();
+    const reloadBtn = document.getElementById("saveConflictReload");
+    if(reloadBtn) reloadBtn.addEventListener("click", ()=> location.reload());
   }
 
   if(activeId){
@@ -919,6 +969,16 @@ function renderLoadError(message){
         <button class="btn primary" id="retryLoadBtn" style="width:100%;margin-top:14px;padding:13px;font-size:15px;">Try again</button>
       </div>
     </div>`;
+}
+
+// Shown above whichever page is current when a bulk save (Item Setup / Product Mixes / Settings /
+// Users) was refused because someone else saved first — see persist() and saveConflict. Reloading is
+// the only way back in sync, so that's the only action offered; there's no safe auto-merge to offer instead.
+function renderSaveConflictBanner(message){
+  return `<div class="banner critical">
+    <span>⚠ ${esc(message)}</span>
+    <button class="btn small" id="saveConflictReload">Reload now</button>
+  </div>`;
 }
 
 // ---------- Login ----------
@@ -2019,7 +2079,9 @@ function wireTabEvents(){
         if(currentUser) entry.loggedBy = currentUser.name;
         DATA.purchaseCosts.push(entry);
         shoppingBuyEditing.delete(bp);
-        persist("Marked " + bp + " as bought");
+        // additive on the backend (touches only this one row) so this can never collide with someone
+        // else logging a different purchase — e.g. from Quick Buy — around the same moment
+        persistPurchaseAction({action:"logPurchase", entry}, "Marked " + bp + " as bought");
       });
     });
     document.querySelectorAll("[data-buy-edit]").forEach(btn=>{
@@ -2040,7 +2102,7 @@ function wireTabEvents(){
         const today = new Date().toISOString().slice(0,10);
         DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
         shoppingBuyEditing.delete(bp);
-        persist("Deleted today's logged purchase for " + bp);
+        persistPurchaseAction({action:"deletePurchaseLog", date:today, baseProduct:bp}, "Deleted today's logged purchase for " + bp);
       });
     });
   }
@@ -2098,7 +2160,10 @@ function wireTabEvents(){
           DATA.purchaseCosts.push(entry);
           quickBuySelected = null;
           quickBuySearch = "";
-          persist("Logged " + bp);
+          // additive on the backend — this is the fix for two buyers logging purchases from the market
+          // at the same time: it only ever touches this one product+date row, so it can never collide
+          // with, wait on, or overwrite whatever the other person is logging right now
+          persistPurchaseAction({action:"logPurchase", entry}, "Logged " + bp);
         });
       }
       const unableBtn = document.getElementById("quickBuyLogUnable");
@@ -2115,7 +2180,7 @@ function wireTabEvents(){
           DATA.purchaseIssues.push(entry);
           quickBuySelected = null;
           quickBuySearch = "";
-          persist("Logged " + bp + " as unable to purchase");
+          persistPurchaseAction({action:"logPurchaseIssue", entry}, "Logged " + bp + " as unable to purchase");
         });
       }
     }
@@ -2134,7 +2199,7 @@ function wireTabEvents(){
         const today = new Date().toISOString().slice(0,10);
         DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
         DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
-        persist("Deleted today's log entry for " + bp);
+        persistPurchaseAction({action:"deletePurchaseLog", date:today, baseProduct:bp}, "Deleted today's log entry for " + bp);
       });
     });
   }
@@ -2484,6 +2549,11 @@ function wireTabEvents(){
         const missing = required.filter(k=> !(k in parsed));
         if(missing.length){ toast("That file is missing: " + missing.join(", ")); return; }
         DATA = applyDataDefaults(parsed);
+        // A restore is a deliberate "overwrite everything with this file" action — it must never be
+        // blocked by the two-tabs-open conflict check just because the backup's own syncVersion (from
+        // whenever it was downloaded) doesn't match whatever's current now. Clearing it here is exactly
+        // what tells the backend to skip that check for this save (see handleFullSave_ in Code.gs).
+        DATA.syncVersion = null;
         // if the logged-in user doesn't exist (or has a different role) in the restored data, log out rather than keep stale access
         if(currentUser && !DATA.users.some(u=>u.name===currentUser.name && u.role===currentUser.role)){
           currentUser = null;
