@@ -738,20 +738,28 @@ async function loadData(){
 }
 
 // Full-object save — used by Item Setup, Product Mixes, Settings, Users, Sales upload, Stock Take,
-// and Restore. Sends the WHOLE DATA object; the backend replaces the WHOLE corresponding sheet(s)
-// from it. Fine when one person edits at a time, which is why it carries the version check (see
-// Code.gs's handleFullSave_): if someone else saved since this tab loaded, the save is refused
-// rather than silently overwriting their change. Quick Buy / Shopping List purchase logging does
-// NOT go through this — see persistPurchaseAction below for why.
-async function persist(successMsg){
+// and Restore. Sends the WHOLE DATA object; the backend replaces the corresponding sheet(s) from it.
+// Fine when one person edits at a time, which is why it carries the version check (see Code.gs's
+// handleFullSave_): if someone else saved since this tab loaded, the save is refused rather than
+// silently overwriting their change. Quick Buy / Shopping List purchase logging does NOT go through
+// this — see persistPurchaseAction below for why.
+//
+// changedKeys: which top-level DATA fields this particular save actually touched (e.g. ["stockTakes"],
+// ["procurementPlan","shoppingList"]) — the backend only rewrites THOSE sheets instead of all of them,
+// which is most of what makes saving fast (each sheet rewrite is its own round trip on Google's side;
+// skipping the ones nothing changed in is a bigger win than anything about the data size itself).
+// Omit it (or pass nothing) for a genuine full save — currently just Restore from backup — where every
+// sheet really does need rewriting.
+async function persist(successMsg, changedKeys){
   try{
+    const payload = changedKeys ? Object.assign({}, DATA, {changedKeys}) : DATA;
     // Content-Type: text/plain keeps this a CORS "simple request" — Apps Script Web Apps don't
     // handle the OPTIONS preflight a real "application/json" content-type would trigger. The
     // backend parses the body as JSON regardless of the header (see Code.gs's doPost).
     const res = await fetch(API_URL, {
       method: "POST",
       headers: {"Content-Type": "text/plain;charset=utf-8"},
-      body: JSON.stringify(DATA),
+      body: JSON.stringify(payload),
     });
     let result = null;
     try{ result = await res.json(); }catch(e){ /* fall through to the failure toast below */ }
@@ -2234,7 +2242,7 @@ function wireTabEvents(){
         if(v==="") delete DATA.productCeilings[bp];
         else DATA.productCeilings[bp] = Number(v)||0;
       });
-      persist("Settings saved");
+      persist("Settings saved", ["procurementPlan","shoppingList","categoryBuffers","productCycles","productCeilings"]);
     });
     document.getElementById("dashboardCategoryFilter").addEventListener("change", (e)=>{
       dashboardCategoryFilter = e.target.value;
@@ -2244,7 +2252,7 @@ function wireTabEvents(){
       b.addEventListener("click", ()=>{
         const date = b.dataset.delHistory;
         DATA.salesHistory = DATA.salesHistory.filter(h=>h.date!==date);
-        persist("Removed sales history for " + date);
+        persist("Removed sales history for " + date, ["salesHistory"]);
       });
     });
   }
@@ -2259,7 +2267,7 @@ function wireTabEvents(){
       const p = parseItem(text);
       DATA.itemSetup.push({item:text, itemCode:p.code, description:p.description, sellingUnit:p.unit, baseProduct:null, procurementUnit:null, conversionFactor:null});
       DATA.itemSetup.sort((a,b)=> a.item.localeCompare(b.item));
-      persist("Added " + text);
+      persist("Added " + text, ["itemSetup"]);
     });
     // A Product Mix has no Base Product/Procurement Unit/Qty per Unit of its own — the moment a row's
     // Category is set to "Mixes" (even before Save is clicked), grey out and blank those three fields
@@ -2314,7 +2322,7 @@ function wireTabEvents(){
           it.conversionFactor = null;
         }
       });
-      persist("Item Setup saved");
+      persist("Item Setup saved", ["itemSetup","baseProductCategories"]);
     });
     document.querySelectorAll("[data-del-item]").forEach(b=>{
       b.addEventListener("click", ()=>{
@@ -2323,7 +2331,7 @@ function wireTabEvents(){
         if(!it) return;
         if(!confirm(`Delete "${it.item}" from Item Setup?\n\nThis removes it immediately — it won't wait for Save changes. If it's still coming through in a Sales report, it'll just get added back automatically next time you upload one.`)) return;
         DATA.itemSetup.splice(idx,1);
-        persist("Deleted " + it.item);
+        persist("Deleted " + it.item, ["itemSetup"]);
       });
     });
   }
@@ -2341,13 +2349,13 @@ function wireTabEvents(){
         percent: pctRaw ? Number(pctRaw)/100 : null,
         fixedQty: fixedRaw ? Number(fixedRaw) : null,
       });
-      persist("Product mix line added");
+      persist("Product mix line added", ["recipes"]);
     });
     document.querySelectorAll("[data-del-recipe]").forEach(b=>{
       b.addEventListener("click", ()=>{
         const i = Number(b.dataset.delRecipe);
         DATA.recipes.splice(i,1);
-        persist("Product mix line removed");
+        persist("Product mix line removed", ["recipes"]);
       });
     });
     document.getElementById("saveRecipes").addEventListener("click", ()=>{
@@ -2377,7 +2385,7 @@ function wireTabEvents(){
           rec.fixedQty = null;
         }
       });
-      persist("Product Mixes saved");
+      persist("Product Mixes saved", ["recipes"]);
     });
   }
 
@@ -2445,14 +2453,14 @@ function wireTabEvents(){
           DATA.purchaseCosts.push(entry);
         });
         purchaseDraftLines = [];
-        persist("Submitted " + count + " purchase" + (count===1?"":"s") + " for " + dateSaved);
+        persist("Submitted " + count + " purchase" + (count===1?"":"s") + " for " + dateSaved, ["purchaseCosts"]);
       });
     }
     document.querySelectorAll("[data-del-purchase]").forEach(b=>{
       b.addEventListener("click", ()=>{
         const i = Number(b.dataset.delPurchase);
         DATA.purchaseCosts.splice(i,1);
-        persist("Purchase entry removed");
+        persist("Purchase entry removed", ["purchaseCosts"]);
       });
     });
   }
@@ -2504,14 +2512,14 @@ function wireTabEvents(){
             count++;
           }
         });
-        persist("Stock take saved for " + stockCategoryFilter + " on " + stockTakeDate + " (" + count + " entered)");
+        persist("Stock take saved for " + stockCategoryFilter + " on " + stockTakeDate + " (" + count + " entered)", ["stockTakes"]);
       });
     }
     document.querySelectorAll("[data-del-stocktake]").forEach(b=>{
       b.addEventListener("click", ()=>{
         const i = Number(b.dataset.delStocktake);
         DATA.stockTakes.splice(i,1);
-        persist("Stock take entry removed");
+        persist("Stock take entry removed", ["stockTakes"]);
       });
     });
     const downloadArchiveBtn = document.getElementById("downloadStockArchiveCsv");
@@ -2575,7 +2583,7 @@ function wireTabEvents(){
       if((DATA.users||[]).some(u=>u.name.toLowerCase()===name.toLowerCase())){ toast("A user with that name already exists"); return; }
       if(!DATA.users) DATA.users = [];
       DATA.users.push({name, pin, role});
-      persist("Added " + name);
+      persist("Added " + name, ["users"]);
     });
     document.getElementById("saveUsersBtn").addEventListener("click", ()=>{
       document.querySelectorAll("#main [data-idx]").forEach(inp=>{
@@ -2591,7 +2599,7 @@ function wireTabEvents(){
           try{ sessionStorage.setItem("dailyFruitUser", JSON.stringify(currentUser)); }catch(e){}
         }
       }
-      persist("Users updated");
+      persist("Users updated", ["users"]);
     });
     document.querySelectorAll("[data-del-user]").forEach(b=>{
       b.addEventListener("click", ()=>{
@@ -2602,7 +2610,7 @@ function wireTabEvents(){
           return;
         }
         DATA.users.splice(i,1);
-        persist("User removed");
+        persist("User removed", ["users"]);
       });
     });
   }
@@ -2636,7 +2644,7 @@ function submitSalesUpload(){
   const msg = "Item Sales for " + salesUploadDate + " submitted — Pyroca: " + salesPendingA.filename + " (" + salesPendingA.rows.length + "), DF Veg: " + salesPendingB.filename + " (" + salesPendingB.rows.length + ")" + (added ? (", " + added + " new item(s) added to Item Setup") : "");
   salesPendingA = null;
   salesPendingB = null;
-  persist(msg);
+  persist(msg, ["salesA","salesB","itemSetup","salesHistory"]);
 }
 
 function wireSalesDropzone(entityKey){
