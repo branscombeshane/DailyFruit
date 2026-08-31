@@ -224,7 +224,7 @@ function emptyDataShape(){
   // a complete, always-safe starting shape so nothing crashes while the real fetch is in flight
   return {
     salesA: [], salesB: [], itemSetup: [], recipes: [],
-    procurementPlan: {coverMultiplier:1, safetyBuffer:0, historyWindow:90},
+    procurementPlan: {coverMultiplier:1, safetyBuffer:0, historyWindow:30},
     purchaseCosts: [], baseProductCategories: {},
     stockTakes: [], shoppingList: {criticalPct:0.25, overstockPct:1.5},
     users: [{name:"Owner", pin:"1234", role:"owner"}],
@@ -306,6 +306,7 @@ function setCurrentTab(tabId){
   try{ localStorage.setItem("dailyFruitCurrentTab", tabId); }catch(e){}
 }
 let itemSearch = "";
+let itemSetupCategoryFilter = "";
 let dashboardCategoryFilter = "";
 let salesUploadDate = new Date().toISOString().slice(0,10); // date the Item Sales upload covers — defaults to today, change it to backdate historical reports into the sales history archive
 let salesPendingA = null; // {filename, rows} staged Pyroca file for the current report date, awaiting Submit
@@ -442,7 +443,7 @@ function itemSetupDerived(){
 // uploads — or backdated historical reports — each land on their own day instead of overwriting one
 // another. This builds up automatically instead of Calculated Holdings relying on whatever single
 // report happens to be loaded right now.
-const DEMAND_HISTORY_WINDOW = 90; // fallback default if the owner hasn't set one (see demandHistoryWindow())
+const DEMAND_HISTORY_WINDOW = 30; // fallback default if the owner hasn't set one (see demandHistoryWindow())
 
 // Owner-adjustable on Calculated Holdings: a shorter window adapts faster to a seasonal turn (fresh
 // produce demand shifts through the year) at the cost of noisier day-to-day recommendations; a longer
@@ -1401,7 +1402,13 @@ function renderDashboard(){
 function renderItemSetup(){
   const derived = itemSetupDerived();
   const q = itemSearch.trim().toLowerCase();
-  const filtered = q ? derived.filter(it => it.item.toLowerCase().includes(q) || (it.baseProduct||"").toLowerCase().includes(q)) : derived;
+  const categories = Array.from(new Set(derived.map(it=> categoryFor(it.baseProduct) || "Uncategorized"))).sort();
+  const categoryFilterOptions = `<option value="">All categories</option>` +
+    categories.map(c=>`<option value="${esc(c)}" ${c===itemSetupCategoryFilter?"selected":""}>${esc(c)}</option>`).join("");
+  let filtered = q ? derived.filter(it => it.item.toLowerCase().includes(q) || (it.baseProduct||"").toLowerCase().includes(q)) : derived;
+  if(itemSetupCategoryFilter){
+    filtered = filtered.filter(it => (categoryFor(it.baseProduct) || "Uncategorized") === itemSetupCategoryFilter);
+  }
   const setupCount = derived.filter(it=>it.baseProduct).length;
 
   const rows = filtered.map(it=>{
@@ -1444,12 +1451,16 @@ function renderItemSetup(){
     <div class="card">
       <div class="cardhead">
         <div><h3>Items</h3><div class="desc">Edit the input columns, then Save changes once. Category applies to every variant of that Base Product.</div></div>
+        <div class="field" style="min-width:180px;">
+          <label>Filter by category</label>
+          <select id="itemSetupCategoryFilterSel">${categoryFilterOptions}</select>
+        </div>
         <div class="searchbar">🔍 <input type="text" id="itemSearchBox" placeholder="Search item or base product…" value="${esc(itemSearch)}"></div>
       </div>
       <div class="cardbody" style="padding:0;">
         <div class="tablewrap" style="border:none;border-radius:0;max-height:640px;overflow-y:auto;"><table>
           <thead><tr><th>Item</th><th class="num">Qty sold</th><th class="num">From mixes</th><th>Base product</th><th>Category</th><th>Procurement unit</th><th>Qty per unit</th><th class="num">Units needed</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="8" class="empty">No items match your search.</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="8" class="empty">No items match your search/filter.</td></tr>`}</tbody>
         </table></div>
       </div>
     </div>`;
@@ -2163,6 +2174,7 @@ function wireTabEvents(){
 
   if(currentTab==="itemsetup"){
     document.getElementById("itemSearchBox").addEventListener("input", (e)=>{ itemSearch = e.target.value; render(); });
+    document.getElementById("itemSetupCategoryFilterSel").addEventListener("change", (e)=>{ itemSetupCategoryFilter = e.target.value; render(); });
     document.getElementById("addItemRow").addEventListener("click", ()=>{
       const text = document.getElementById("newItemText").value.trim();
       if(!text){ toast("Enter an item name first"); return; }
