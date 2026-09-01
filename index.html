@@ -313,6 +313,7 @@ function applyDataDefaults(d){
     d.users = [{name:"Owner", pin:"1234", role:"owner"}];
   }
   if(d.syncVersion===undefined) d.syncVersion = null; // backward-compatible default for backups/backends predating the two-tabs-open safety net
+  if(d.dataVersion===undefined) d.dataVersion = null; // backward-compatible default for backups/backends predating the stale-tab refresh check
   return d;
 }
 
@@ -336,6 +337,15 @@ let dataLoadError = null;
 // up) across tab switches until the page is reloaded, since that's the only safe way to get back in
 // sync — sticking around is the point, a toast would be too easy to miss for this.
 let saveConflict = null;
+// "Newer data is available" — a DIFFERENT situation from saveConflict above (which means a save WE
+// tried was rejected). This means the background staleness poll (see checkForUpdates) noticed the
+// backend has moved on since this tab loaded, before we've tried to save anything ourselves. On a
+// read-focused tab with nothing unsaved sitting in the DOM (see SAFE_AUTO_REFRESH_TABS) that's handled
+// silently — DATA just gets swapped out and re-rendered; this flag and its banner are only for tabs
+// where a silent swap could wipe someone's in-progress typing.
+let staleDataAvailable = false;
+let lastKnownDataVersion = null; // DATA.dataVersion as of this tab's last successful load/refresh/save; compared against the server's on every poll
+let dataRefreshInFlight = false; // guards against overlapping silent refreshes if a slow one is still in flight when the next poll fires
 // tentatively restored here (before real data has loaded); boot() re-validates it against the
 // real DATA.users once the fetch completes, since the empty starting shape above can't tell
 // whether this session's user still exists or still has the same role
@@ -434,6 +444,23 @@ const ROLE_TABS = {
   procurement: ["shoppinglist","quickbuy","shoppingarchive","purchase","sageimport","stocktake"],
   stocktaker: ["shoppinglist","stocktake"],
 };
+
+// Tabs where a background data refresh can safely swap DATA and re-render without ever wiping typing
+// that's only ever lived in the DOM: Shopping List, Quick Buy and the Shopping List Archive have
+// nothing that survives solely as an uncommitted input value. Every other tab turned out to have at
+// least one — including ones that look read-only at a glance: Dashboard doubles as the Calculated
+// Holdings settings screen (cover/buffer/threshold inputs, a "Save settings" button) and Sage CSV
+// carries the category wastage-buffer table added earlier — so both get the banner instead, same as
+// the genuinely edit-heavy tabs (Item Setup, Recipes, Item Sales, Purchase, Stock Take, Users, Backup).
+const SAFE_AUTO_REFRESH_TABS = new Set(["shoppinglist","quickbuy","shoppingarchive"]);
+
+// Shopping List and Quick Buy DO have their own inline forms (buy/unable-to-purchase entry) even
+// though they're in the safe set above — those live as open Map/Set state plus typed-but-unsubmitted
+// DOM input values, so a silent refresh while one is open is deferred (the next poll will just try
+// again) rather than risking wiping someone's half-entered purchase.
+function hasUnsavedInlineEdit(){
+  return shoppingBuyEditing.size > 0 || shoppingIssueEditing.size > 0 || quickBuySelected !== null;
+}
 function roleCanAccessTab(role, tabId){
   return (ROLE_TABS[role]||[]).includes(tabId);
 }
@@ -894,6 +921,9 @@ async function persist(successMsg, changedKeys){
     if(res.ok && result && result.ok){
       saveConflict = null;
       if(result.syncVersion) DATA.syncVersion = result.syncVersion; // so this tab's NEXT save compares against its own last write, not the stale one it loaded with
+      // this tab's OWN save is also, trivially, the data changing — absorb it here so the next staleness
+      // poll doesn't turn around and tell this same tab "newer data is available" about its own write
+      if(result.dataVersion){ DATA.dataVersion = result.dataVersion; lastKnownDataVersion = result.dataVersion; }
       toast(successMsg || "Saved");
     } else if(result && result.conflict){
       saveConflict = result.error || "This data changed elsewhere since you loaded it — reload before saving again.";
@@ -922,6 +952,9 @@ async function persistPurchaseAction(payload, successMsg){
     let result = null;
     try{ result = await res.json(); }catch(e){ /* fall through to the failure toast below */ }
     if(res.ok && result && result.ok){
+      // same reasoning as persist() above — this tab's own purchase log is data changing too, so absorb
+      // its new version rather than have the next poll flag this tab's own write back at itself
+      if(result.dataVersion){ DATA.dataVersion = result.dataVersion; lastKnownDataVersion = result.dataVersion; }
       toast(successMsg || "Saved");
     } else {
       toast("Could not save" + (result && result.error ? (": " + result.error) : "") + " — check your connection and try again");
@@ -1052,11 +1085,15 @@ function render(){
     else if(currentTab==="backup") pageHtml = renderBackup();
     // shown above whichever page is current, on every tab, until reloaded — a bulk save (Item Setup /
     // Product Mixes / Settings / Users) can be refused from any of those pages, and this needs to stay
-    // visible regardless of which one the user wanders to afterward
-    main.innerHTML = (saveConflict ? renderSaveConflictBanner(saveConflict) : "") + pageHtml;
+    // visible regardless of which one the user wanders to afterward. saveConflict (an actually-rejected
+    // save) takes priority over staleDataAvailable (just a heads-up, nothing lost yet) when somehow both
+    // are true at once.
+    main.innerHTML = (saveConflict ? renderSaveConflictBanner(saveConflict) : (staleDataAvailable ? renderStaleDataBanner() : "")) + pageHtml;
     wireTabEvents();
     const reloadBtn = document.getElementById("saveConflictReload");
     if(reloadBtn) reloadBtn.addEventListener("click", ()=> location.reload());
+    const staleReloadBtn = document.getElementById("staleDataReload");
+    if(staleReloadBtn) staleReloadBtn.addEventListener("click", ()=> location.reload());
   }
 
   if(activeId){
@@ -1105,6 +1142,18 @@ function renderSaveConflictBanner(message){
   return `<div class="banner critical">
     <span>⚠ ${esc(message)}</span>
     <button class="btn small" id="saveConflictReload">Reload now</button>
+  </div>`;
+}
+
+// Shown above whichever page is current when the background staleness poll (checkForUpdates) notices
+// the backend has moved on — e.g. another user logged a purchase or saved settings — while this tab is
+// on a page where a silent swap could wipe unsaved typing (see SAFE_AUTO_REFRESH_TABS). Deliberately
+// styled less alarming than the save-conflict banner above: nothing has been lost or rejected here,
+// it's just a heads-up that what's on screen isn't the latest anymore.
+function renderStaleDataBanner(){
+  return `<div class="banner info" style="justify-content:space-between;flex-wrap:wrap;">
+    <span>ℹ Updated data is available (someone else made a change). Reload to see it.</span>
+    <button class="btn small" id="staleDataReload">Reload now</button>
   </div>`;
 }
 
@@ -3220,6 +3269,62 @@ function wireSalesDropzone(entityKey){
 
 }
 
+// Cheap poll: asks the backend for just its current dataVersion (no full readAllData_) and compares
+// against what this tab last loaded/saved. Runs on a timer and whenever the tab regains focus or
+// visibility — the visibility/focus check is what actually matters for "left it open on my PC, came
+// back later", since a background tab's timers get throttled or paused by the browser anyway and
+// shouldn't be relied on alone. Never overlaps itself and does nothing until the first load has landed
+// and someone's logged in (no point refreshing a login screen).
+async function checkForUpdates(){
+  if(!dataLoaded || !currentUser || dataRefreshInFlight) return;
+  let serverVersion;
+  try{
+    const res = await fetch(API_URL + "?action=version", {cache: "no-store"});
+    if(!res.ok) return;
+    const result = await res.json();
+    if(!result || !result.ok) return;
+    serverVersion = result.dataVersion || null;
+  }catch(e){ return; } // offline / a blip — just try again on the next poll, no need to alarm anyone over one failed check
+
+  if(serverVersion === lastKnownDataVersion) return; // still current, including the both-null case (nothing's ever been saved yet)
+
+  if(SAFE_AUTO_REFRESH_TABS.has(currentTab) && !hasUnsavedInlineEdit()){
+    // Nothing on this tab can be sitting unsaved in the DOM right now — safe to swap DATA out from
+    // under the page and re-render without anyone noticing anything beyond the numbers updating.
+    dataRefreshInFlight = true;
+    try{
+      const fresh = await loadData();
+      DATA = fresh;
+      lastKnownDataVersion = DATA.dataVersion || null;
+      staleDataAvailable = false;
+      render();
+    }catch(e){
+      // leave everything as-is — the next poll will just notice the same staleness and try again
+    }
+    dataRefreshInFlight = false;
+  } else {
+    // Either on a tab where a silent swap could wipe unsaved typing, or this safe tab currently has an
+    // inline form open — surface the banner instead and let the person choose when to reload.
+    showStaleDataBanner();
+  }
+}
+
+// Deliberately does NOT call the full render() — render() rebuilds the current tab's entire pageHtml
+// from DATA, which would blow away exactly the kind of unsaved-but-not-yet-submitted typing (Dashboard
+// settings fields, Sage buffer inputs, etc.) that this banner exists to protect in the first place.
+// Instead this just splices the banner markup into #main directly, leaving everything else untouched.
+// staleDataAvailable is still set so a LATER full render() (e.g. switching tabs) keeps showing it, the
+// same way saveConflict already does.
+function showStaleDataBanner(){
+  staleDataAvailable = true;
+  if(saveConflict) return; // the save-conflict banner already covers "something needs your attention"; don't stack a second one on top
+  const main = document.getElementById("main");
+  if(!main || document.getElementById("staleDataReload")) return; // already showing
+  main.insertAdjacentHTML("afterbegin", renderStaleDataBanner());
+  const btn = document.getElementById("staleDataReload");
+  if(btn) btn.addEventListener("click", ()=> location.reload());
+}
+
 async function boot(){
   // paint the loading screen right away — without this, #main stays completely blank for however
   // long the fetch takes (Apps Script's first request after a while can take a few seconds), since
@@ -3229,6 +3334,8 @@ async function boot(){
     DATA = await loadData();
     dataLoaded = true;
     dataLoadError = null;
+    lastKnownDataVersion = DATA.dataVersion || null;
+    staleDataAvailable = false; // a fresh load is by definition current, even if it was triggered by the "Reload now" button on a stale-data banner
     // now that real data is in, re-validate the tentatively-restored session: a user removed
     // (or whose role changed) elsewhere since this session logged in shouldn't keep stale access
     if(currentUser && !DATA.users.some(u=>u.name===currentUser.name && u.role===currentUser.role)){
@@ -3241,6 +3348,14 @@ async function boot(){
   render();
 }
 boot();
+
+// Registered once at script load, not inside boot() — boot() can re-run (the "Try again" button on a
+// failed load calls it again), and checkForUpdates() is already a no-op until dataLoaded/currentUser
+// are set, so there's no need to guard against double-registration here.
+const DATA_POLL_INTERVAL_MS = 90000; // 90s — frequent enough to catch a returning user quickly, cheap enough (one tiny GET) not to matter at any real scale
+setInterval(checkForUpdates, DATA_POLL_INTERVAL_MS);
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState === "visible") checkForUpdates(); });
+window.addEventListener("focus", checkForUpdates);
 </script>
 </body>
 </html>
