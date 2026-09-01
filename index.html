@@ -376,6 +376,7 @@ let stockTakeDate = new Date().toISOString().slice(0,10);
 let stockArchiveDateFilter = "";
 let shoppingCategoryFilter = "";
 let shoppingStatusFilter = "";
+let shoppingBoughtTodayOnly = false; // toggled by the "Bought today" summary tile — ANDs with the status/category filters above, since it's a separate dimension (has anything been logged today), not another status
 let shoppingBuyEditing = new Map(); // baseProduct -> id of the purchase line being edited, or "new" when adding another line, for whichever rows are currently showing the inline buy-entry inputs
 let quickBuySearch = "";
 let quickBuyCategoryFilter = "";
@@ -1296,11 +1297,24 @@ function statBlock(label, statusValue, count, color, small){
   </div>`;
 }
 
+// Toggle tile: "Bought today" — how many base products have at least one purchase line logged for
+// today, across any supplier. A separate dimension from status/category (a product can be Critical
+// AND already bought today, e.g. a top-up is still on the way), so this ANDs with those filters
+// instead of replacing them the way the status tiles replace each other.
+function boughtTodayBlock(count){
+  const active = shoppingBoughtTodayOnly;
+  return `<div class="stat clickable${active?" active":""}" data-stat-boughttoday="1" title="Show only products with a purchase logged today${active?" (click again to clear)":""}">
+    <div class="label">Bought today</div><div class="value" style="color:var(--accent)">${count}</div>
+  </div>`;
+}
+
 function renderShoppingList(){
+  const today = new Date().toISOString().slice(0,10);
   const hiddenCats = hiddenCategorySet();
   const all = shoppingListComputed().filter(r=> !hiddenCats.has(r.category||"Uncategorized"));
   const counts = {"Critical":0, "Buy":0, "OK":0, "Overstocked":0, "No stock take":0, "Missing setup":0};
   all.forEach(r=> counts[r.status] = (counts[r.status]||0) + 1);
+  const boughtTodayCount = all.filter(r=> purchaseEntriesForDate(r.baseProduct, today).length > 0).length;
 
   const categories = Array.from(new Set(all.map(r=> r.category || "Uncategorized"))).sort();
   const categoryOptions = `<option value="">All categories</option>` +
@@ -1313,9 +1327,9 @@ function renderShoppingList(){
   let rows = all;
   if(shoppingCategoryFilter) rows = rows.filter(r=> (r.category||"Uncategorized")===shoppingCategoryFilter);
   if(shoppingStatusFilter) rows = rows.filter(r=> r.status===shoppingStatusFilter);
+  if(shoppingBoughtTodayOnly) rows = rows.filter(r=> purchaseEntriesForDate(r.baseProduct, today).length > 0);
 
   const noStockTakesYet = DATA.stockTakes.length === 0;
-  const today = new Date().toISOString().slice(0,10);
 
   const tableRows = rows.map(r=>{
     const flags = [];
@@ -1346,8 +1360,7 @@ function renderShoppingList(){
       ${statBlock("Recommended to buy","Buy",counts["Buy"],"var(--warn)")}
       ${statBlock("OK","OK",counts["OK"],"var(--good)")}
       ${statBlock("Overstocked","Overstocked",counts["Overstocked"],"var(--muted)")}
-      ${statBlock("No stock take","No stock take",counts["No stock take"],"var(--muted)",true)}
-      ${statBlock("Missing setup","Missing setup",counts["Missing setup"],"var(--muted)",true)}
+      ${boughtTodayBlock(boughtTodayCount)}
     </div>
     <div class="card">
       <div class="cardhead">
@@ -2274,6 +2287,11 @@ function wireTabEvents(){
         shoppingStatusFilter = (shoppingStatusFilter === status) ? "" : status;
         render();
       });
+    });
+    const boughtTodayTile = document.querySelector("[data-stat-boughttoday]");
+    if(boughtTodayTile) boughtTodayTile.addEventListener("click", ()=>{
+      shoppingBoughtTodayOnly = !shoppingBoughtTodayOnly;
+      render();
     });
     document.querySelectorAll("[data-buy-tick]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
