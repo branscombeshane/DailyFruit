@@ -105,6 +105,9 @@
   .stat .label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:6px;}
   .stat .value{font-size:22px; font-weight:600; font-family:"IBM Plex Mono",monospace;}
   .stat .value.small{font-size:15px; font-family:"IBM Plex Sans",sans-serif; font-weight:600;}
+  .stat.clickable{cursor:pointer; transition:box-shadow .12s ease, border-color .12s ease; -webkit-tap-highlight-color:transparent;}
+  .stat.clickable:hover{border-color:var(--accent);}
+  .stat.clickable.active{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft) inset, var(--shadow);}
 
   .card{background:var(--surface); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); margin-bottom:22px;}
   .card .cardhead{padding:14px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;}
@@ -1283,6 +1286,16 @@ function renderBuyCell(r, today){
   </div>`;
 }
 
+// A clickable summary tile on the Shopping List header row — clicking it sets the Status filter to
+// statusValue (clicking the already-active one clears the filter back to "All statuses"), staying in
+// sync with the existing Status dropdown since both read/write the same shoppingStatusFilter global.
+function statBlock(label, statusValue, count, color, small){
+  const active = shoppingStatusFilter === statusValue;
+  return `<div class="stat clickable${active?" active":""}" data-stat-filter="${esc(statusValue)}" title="Show only ${esc(statusValue)}${active?" (click again to clear)":""}">
+    <div class="label">${esc(label)}</div><div class="value${small?" small":""}" style="color:${color}">${count}</div>
+  </div>`;
+}
+
 function renderShoppingList(){
   const hiddenCats = hiddenCategorySet();
   const all = shoppingListComputed().filter(r=> !hiddenCats.has(r.category||"Uncategorized"));
@@ -1329,12 +1342,12 @@ function renderShoppingList(){
     </div>
     ${noStockTakesYet ? `<div class="banner warn">No stock takes recorded yet — log today's counts in Stock Take, then this list will show what needs buying.</div>` : ""}
     <div class="cardrow">
-      <div class="stat"><div class="label">Critical</div><div class="value" style="color:var(--critical)">${counts["Critical"]}</div></div>
-      <div class="stat"><div class="label">Recommended to buy</div><div class="value" style="color:var(--warn)">${counts["Buy"]}</div></div>
-      <div class="stat"><div class="label">OK</div><div class="value" style="color:var(--good)">${counts["OK"]}</div></div>
-      <div class="stat"><div class="label">Overstocked</div><div class="value" style="color:var(--muted)">${counts["Overstocked"]}</div></div>
-      <div class="stat"><div class="label">No stock take</div><div class="value small" style="color:var(--muted)">${counts["No stock take"]}</div></div>
-      <div class="stat"><div class="label">Missing setup</div><div class="value small" style="color:var(--muted)">${counts["Missing setup"]}</div></div>
+      ${statBlock("Critical","Critical",counts["Critical"],"var(--critical)")}
+      ${statBlock("Recommended to buy","Buy",counts["Buy"],"var(--warn)")}
+      ${statBlock("OK","OK",counts["OK"],"var(--good)")}
+      ${statBlock("Overstocked","Overstocked",counts["Overstocked"],"var(--muted)")}
+      ${statBlock("No stock take","No stock take",counts["No stock take"],"var(--muted)",true)}
+      ${statBlock("Missing setup","Missing setup",counts["Missing setup"],"var(--muted)",true)}
     </div>
     <div class="card">
       <div class="cardhead">
@@ -2254,6 +2267,13 @@ function wireTabEvents(){
     document.getElementById("shoppingCategoryFilterSel").addEventListener("change", (e)=>{
       shoppingCategoryFilter = e.target.value;
       render();
+    });
+    document.querySelectorAll("[data-stat-filter]").forEach(el=>{
+      el.addEventListener("click", ()=>{
+        const status = el.dataset.statFilter;
+        shoppingStatusFilter = (shoppingStatusFilter === status) ? "" : status;
+        render();
+      });
     });
     document.querySelectorAll("[data-buy-tick]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
