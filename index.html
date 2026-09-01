@@ -403,12 +403,16 @@ let quickBuyCategoryFilter = "";
 let quickBuySelected = null; // baseProduct currently open in the Quick Buy entry screen, or null for the search/pick list
 let quickBuyMode = "buy"; // "buy" (qty + price form) or "unable" (reason form) for the currently selected product
 let quickBuyEditingId = null; // id of the purchase line being corrected, or null when the buy form is adding a fresh line (e.g. a second supplier for today)
+// ids of already-received purchase lines currently showing an editable received-qty/received-cost form
+// again (to correct a mistake) — pending (not-yet-received) lines always show the form, no toggle needed.
+let receivingEditing = new Set();
 
 const NAV = [
   {group:"Shopping List", items:[
     {id:"shoppinglist", label:"Shopping List"},
     {id:"quickbuy", label:"Quick Buy"},
     {id:"shoppingarchive", label:"Shopping List Archive"},
+    {id:"receiving", label:"Receiving"},
   ]},
   {group:"Holding Numbers", items:[
     {id:"dashboard", label:"Calculated Holdings"},
@@ -437,21 +441,25 @@ if(!TABS.some(t=>t.id===currentTab)){
   try{ localStorage.setItem("dailyFruitCurrentTab", currentTab); }catch(e){}
 }
 
-// who can see which tab. Owner: everything. Procurement: the day-to-day buying workflow.
-// Stock Taker: just counting stock (their Shopping List view is further restricted to read-only inside renderShoppingList/renderBuyCell).
+// who can see which tab. Owner: everything. Procurement: the day-to-day buying workflow (Receiving
+// included, but read-only — see canManageReceiving/renderReceiving). Stock Taker: just counting stock
+// (their Shopping List view is further restricted to read-only inside renderShoppingList/renderBuyCell).
+// Receiving: a new role, scoped to just confirming deliveries — see canManageReceiving.
 const ROLE_TABS = {
-  owner: ["shoppinglist","quickbuy","shoppingarchive","dashboard","salesdata","itemsetup","recipes","purchase","sageimport","stocktake","users","backup"],
-  procurement: ["shoppinglist","quickbuy","shoppingarchive","purchase","sageimport","stocktake"],
+  owner: ["shoppinglist","quickbuy","shoppingarchive","receiving","dashboard","salesdata","itemsetup","recipes","purchase","sageimport","stocktake","users","backup"],
+  procurement: ["shoppinglist","quickbuy","shoppingarchive","receiving","purchase","sageimport","stocktake"],
   stocktaker: ["shoppinglist","stocktake"],
+  receiving: ["receiving"],
 };
 
 // Tabs where a background data refresh can safely swap DATA and re-render without ever wiping typing
 // that's only ever lived in the DOM: Shopping List, Quick Buy and the Shopping List Archive have
 // nothing that survives solely as an uncommitted input value. Every other tab turned out to have at
 // least one — including ones that look read-only at a glance: Dashboard doubles as the Calculated
-// Holdings settings screen (cover/buffer/threshold inputs, a "Save settings" button) and Sage CSV
-// carries the category wastage-buffer table added earlier — so both get the banner instead, same as
-// the genuinely edit-heavy tabs (Item Setup, Recipes, Item Sales, Purchase, Stock Take, Users, Backup).
+// Holdings settings screen (cover/buffer/threshold inputs, a "Save settings" button), Sage CSV carries
+// the category wastage-buffer table added earlier, and Receiving's pending-delivery rows carry their
+// own received-qty/received-cost inputs — so all three get the banner instead, same as the genuinely
+// edit-heavy tabs (Item Setup, Recipes, Item Sales, Purchase, Stock Take, Users, Backup).
 const SAFE_AUTO_REFRESH_TABS = new Set(["shoppinglist","quickbuy","shoppingarchive"]);
 
 // Shopping List and Quick Buy DO have their own inline forms (buy/unable-to-purchase entry) even
@@ -466,6 +474,12 @@ function roleCanAccessTab(role, tabId){
 }
 function canManagePurchases(){
   return !!currentUser && (currentUser.role==="owner" || currentUser.role==="procurement");
+}
+// Confirming a delivery is deliberately a DIFFERENT capability from logging one — Procurement can see
+// the Receiving tab (so they know what's still outstanding, e.g. herbs ordered that morning) but only
+// Owner and the Receiving role can actually confirm a delivery arrived. See renderReceiving().
+function canManageReceiving(){
+  return !!currentUser && (currentUser.role==="owner" || currentUser.role==="receiving");
 }
 
 function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
@@ -731,12 +745,15 @@ function shoppingListComputed(){
 // quantity-weighted average across every line logged for it that day, not just one line's price.
 // A line with no qty logged can't be weighted, so it falls back to being the map's answer only when
 // nothing else with a qty exists for that base product+date (better than silently dropping it).
+// Only RECEIVED lines count, and only their RECEIVED figures — an order still awaiting delivery (see
+// isReceived below) doesn't have final numbers yet (cost especially: often genuinely unknown until
+// Receiving fills it in), so it's excluded entirely rather than costed on a provisional/blank figure.
 function weightedCostMap_(entries){
   const sums = {}; // baseProduct -> {costQty, qty, fallbackCost}
   for(const p of entries){
-    if(!p.baseProduct) continue;
-    const qty = Number(p.qty)||0;
-    const cost = Number(p.cost)||0;
+    if(!p.baseProduct || !isReceived(p)) continue;
+    const qty = Number(p.receivedQty)||0;
+    const cost = Number(p.receivedCost)||0;
     if(!sums[p.baseProduct]) sums[p.baseProduct] = {costQty:0, qty:0, fallbackCost:cost};
     if(qty>0){ sums[p.baseProduct].costQty += qty*cost; sums[p.baseProduct].qty += qty; }
     else sums[p.baseProduct].fallbackCost = cost; // last qty-less line wins as the fallback, same spirit as the old "latest wins"
@@ -750,14 +767,16 @@ function weightedCostMap_(entries){
 }
 
 function purchaseCostMap(date){
-  // weighted-average cost per base product across every line logged on this exact date;
-  // omit the date to weight across every line ever logged, any date.
+  // weighted-average cost per base product across every RECEIVED line ordered on this exact date;
+  // omit the date to weight across every line ever logged, any date. A same-day purchase whose delivery
+  // hasn't been confirmed yet by Receiving won't show a cost here until it is — see weightedCostMap_.
   const entries = date ? DATA.purchaseCosts.filter(p=> p.date===date) : DATA.purchaseCosts;
   return weightedCostMap_(entries);
 }
 
 // All purchase LINES logged for a base product on a given date (there can be more than one — different
-// suppliers, different prices — since multi-supplier same-day buying was added).
+// suppliers, different prices — since multi-supplier same-day buying was added). Regardless of received
+// status — this is used for DISPLAYING what's ordered/received on Shopping List/Quick Buy, not costing.
 function purchaseEntriesForDate(baseProduct, date){
   return DATA.purchaseCosts.filter(p=> p.baseProduct===baseProduct && p.date===date);
 }
@@ -766,15 +785,37 @@ function unableEntryForDate(baseProduct, date){
   return DATA.purchaseIssues.find(p=> p.baseProduct===baseProduct && p.date===date) || null;
 }
 
+// A purchase line is "received" once the Receiving role (or Owner) has confirmed it actually arrived —
+// see receivePurchase in Code.gs. Every pre-existing row (from before this Order -> Received workflow
+// existed) was backfilled server-side (backfillPurchaseCostsAsReceived) to already carry a receivedDate,
+// so a missing one here unambiguously means a genuinely open order, never just old data.
+function isReceived(p){
+  return !!p.receivedDate;
+}
+
+// Flags when what actually arrived differs from what was ordered — surfaced on the Receiving tab and
+// summarized on the Dashboard, so a short delivery or a corrected price doesn't just quietly slip by.
+// Only compares a figure when the ORDERED side was actually known — cost is often genuinely blank at
+// order time (e.g. herbs invoiced later), and that's expected, not a discrepancy.
+function receivingDiscrepancy(p){
+  if(!isReceived(p)) return null;
+  const qtyKnown = p.qty!==undefined && p.qty!==null && p.qty!=="";
+  const costKnown = p.cost!==undefined && p.cost!==null && p.cost!=="";
+  const qtyDiff = qtyKnown && Number(p.qty)!==Number(p.receivedQty);
+  const costDiff = costKnown && Number(p.cost)!==Number(p.receivedCost);
+  if(!qtyDiff && !costDiff) return null;
+  return {qtyDiff, costDiff};
+}
+
 // The always-current cost per base product — a weighted average across every line sharing the MOST
 // RECENT date logged for that base product (previously just grabbed whichever single row was logged
 // last; multiple suppliers on the same day needs a genuine weighted average instead of picking one
 // arbitrarily). Used to keep a Product Mix's cost current any time an ingredient's price changes — not
 // tied to any single day's Sage export.
 function latestPurchaseCostMap(){
-  const latestDate = {}; // baseProduct -> most recent date seen
+  const latestDate = {}; // baseProduct -> most recent RECEIVED date seen
   for(const p of DATA.purchaseCosts){
-    if(!p.baseProduct) continue;
+    if(!p.baseProduct || !isReceived(p)) continue; // an order still awaiting delivery has no final cost yet — skip it so an OLDER received price isn't shadowed by a pending one with nothing to offer
     if(!latestDate[p.baseProduct] || (p.date||"") >= latestDate[p.baseProduct]) latestDate[p.baseProduct] = p.date||"";
   }
   const entries = DATA.purchaseCosts.filter(p=> p.baseProduct && (p.date||"")===latestDate[p.baseProduct]);
@@ -1074,6 +1115,7 @@ function render(){
     if(currentTab==="shoppinglist") pageHtml = renderShoppingList();
     else if(currentTab==="quickbuy") pageHtml = renderQuickBuy();
     else if(currentTab==="shoppingarchive") pageHtml = renderShoppingArchive();
+    else if(currentTab==="receiving") pageHtml = renderReceiving();
     else if(currentTab==="dashboard") pageHtml = renderDashboard();
     else if(currentTab==="itemsetup") pageHtml = renderItemSetup();
     else if(currentTab==="recipes") pageHtml = renderRecipes();
@@ -1277,6 +1319,20 @@ function shoppingStatusChip(status){
   const kind = {"Critical":"critical","Buy":"warn","OK":"good","Overstocked":"neutral","No stock take":"neutral","Missing setup":"neutral"}[status] || "neutral";
   return chip(status, kind);
 }
+
+// Shared label + chip for one purchase line, used everywhere a purchase shows up (Shopping List's buy
+// cell, Quick Buy). Pending (not yet received — see isReceived) shows what was ORDERED, styled to look
+// clearly outstanding rather than done, with "cost pending" when the price genuinely isn't known yet
+// (e.g. herbs invoiced later); received shows the ACTUAL received figures, styled as complete.
+function purchaseLineChip(e){
+  const received = isReceived(e);
+  const qty = received ? e.receivedQty : e.qty;
+  const cost = received ? e.receivedCost : e.cost;
+  const hasQty = qty!==undefined && qty!==null && qty!=="";
+  const hasCost = cost!==undefined && cost!==null && cost!=="";
+  const core = (hasQty ? fmtNum(qty)+" @ " : "") + (hasCost ? money(cost) : "cost pending") + (e.supplier ? " (" + esc(e.supplier) + ")" : "");
+  return received ? chip("✓ " + core, "good") : chip("📦 Ordered: " + core, "warn");
+}
 function csvParseLine(line){
   const out=[]; let cur=""; let inQ=false;
   for(let i=0;i<line.length;i++){
@@ -1320,20 +1376,17 @@ function parseSalesCsvText(text){
 
 // ---------- Shopping List ----------
 // Renders every purchase LINE logged today for this base product as its own chip (buying the same
-// product from two suppliers on the same day is normal now, not a duplicate), plus — mirroring Quick
-// Buy — the "unable to purchase" reason for today, if one's been logged. For roles that can manage
-// purchases this includes Edit/Delete per line, an "Add another" control, and a "Mark unable to buy"
-// control. shoppingBuyEditing maps baseProduct -> the id of the purchase line currently being edited
-// (or "new" when adding a fresh one); shoppingIssueEditing is the set of baseProducts currently showing
-// the inline "unable to purchase" reason input.
+// product from two suppliers on the same day is normal now, not a duplicate) — each showing "Ordered"
+// (amber) until the Receiving role confirms it arrived, then "✓" (green) with the actual received
+// figures, see purchaseLineChip — plus, mirroring Quick Buy, the "unable to purchase" reason for today,
+// if one's been logged. For roles that can manage purchases this includes Edit/Delete per line, an "Add
+// another" control, and a "Mark unable to buy" control. shoppingBuyEditing maps baseProduct -> the id of
+// the purchase line currently being edited (or "new" when adding a fresh one); shoppingIssueEditing is
+// the set of baseProducts currently showing the inline "unable to purchase" reason input.
 function renderBuyCell(r, today){
   const bp = r.baseProduct;
   const entries = purchaseEntriesForDate(bp, today);
   const issue = unableEntryForDate(bp, today);
-  const lineLabel = (e)=>{
-    const hasQty = e.qty!==undefined && e.qty!==null && e.qty!=="";
-    return "✓ " + (hasQty ? fmtNum(e.qty)+" @ " : "") + money(e.cost) + (e.supplier ? " (" + esc(e.supplier) + ")" : "");
-  };
   const issueChip = issue ? `<span style="display:inline-flex;align-items:center;gap:4px;">
       ${chip("Unable: " + issue.reason,"critical")}
       ${canManagePurchases() ? `<button class="btn" data-issue-edit="${esc(bp)}" style="padding:1px 6px;font-size:11px;">Edit</button>
@@ -1341,8 +1394,8 @@ function renderBuyCell(r, today){
     </span>` : "";
 
   if(!canManagePurchases()){
-    // read-only role (Stock Taker): show what's been bought (or why it wasn't), no way to log/edit here
-    const parts = entries.map(e=> chip(lineLabel(e),"good"));
+    // read-only role (Stock Taker): show what's ordered/received (or why it wasn't), no way to log/edit here
+    const parts = entries.map(e=> purchaseLineChip(e));
     if(issue) parts.push(chip("Unable: " + issue.reason,"critical"));
     if(!parts.length) return `<span class="helptext">—</span>`;
     return parts.join(" ");
@@ -1354,7 +1407,7 @@ function renderBuyCell(r, today){
 
   const lineChips = entries.map(e=> `
     <span style="display:inline-flex;align-items:center;gap:4px;">
-      ${chip(lineLabel(e),"good")}
+      ${purchaseLineChip(e)}
       <button class="btn" data-buy-edit="${esc(bp)}" data-buy-edit-id="${esc(e.id||"")}" style="padding:1px 6px;font-size:11px;">Edit</button>
       <button class="delbtn" data-buy-delete-id="${esc(e.id||"")}" data-buy-delete-bp="${esc(bp)}" title="Delete this entry">✕</button>
     </span>`).join("");
@@ -1374,7 +1427,7 @@ function renderBuyCell(r, today){
     return `<div data-buy-row="${esc(bp)}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
       ${lineChips}
       ${issueChip}
-      <button class="btn" data-buy-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ ${entries.length?"Add another":"Log buy"}</button>
+      <button class="btn" data-buy-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ ${entries.length?"Add another":"Log order"}</button>
       ${!issue ? `<button class="btn" data-issue-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ Unable to buy</button>` : ""}
     </div>`;
   }
@@ -1385,12 +1438,13 @@ function renderBuyCell(r, today){
   return `<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;">
     ${lineChips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">${lineChips}</div>` : ""}
     <div class="buyrow" data-buy-row="${esc(bp)}" data-buy-editid="${esc(editingExisting?editingVal:"")}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
-      <input type="number" step="0.01" class="buy-qty" placeholder="Qty" value="${esc(prefillQty)}" style="width:56px;">
-      <input type="number" step="0.01" class="buy-cost" placeholder="Price/u" value="${esc(prefillCost)}" style="width:72px;">
+      <input type="number" step="0.01" class="buy-qty" placeholder="Qty*" value="${esc(prefillQty)}" style="width:56px;">
+      <input type="number" step="0.01" class="buy-cost" placeholder="Price/u (if known)" value="${esc(prefillCost)}" style="width:110px;">
       <input type="text" class="buy-supplier" placeholder="Supplier" value="${esc(prefillSupplier)}" style="width:90px;">
       <button class="btn primary" data-buy-tick="${esc(bp)}" title="Save" style="padding:2px 10px;font-size:12px;">✓</button>
       <button class="btn" data-buy-cancel="${esc(bp)}" style="padding:2px 6px;font-size:12px;" title="Close without saving">✕</button>
     </div>
+    <div class="helptext">*Qty is what you're ordering. Leave price blank if it isn't known yet (e.g. invoiced later) — it'll show as "Ordered" until Receiving confirms delivery.</div>
   </div>`;
 }
 
@@ -1530,33 +1584,30 @@ function renderQuickBuy(){
 
     const modeToggle = `
       <div style="display:flex;gap:8px;margin-bottom:16px;">
-        <button class="btn ${quickBuyMode==='buy'?'primary':''}" data-quickbuy-setmode="buy" style="flex:1;">Log purchase</button>
+        <button class="btn ${quickBuyMode==='buy'?'primary':''}" data-quickbuy-setmode="buy" style="flex:1;">Log order</button>
         <button class="btn ${quickBuyMode==='unable'?'primary':''}" data-quickbuy-setmode="unable" style="flex:1;">Unable to purchase</button>
       </div>`;
 
     const todaysLinesList = todaysLines.length ? `
       <div style="margin-bottom:16px;">
         <div class="helptext" style="font-weight:600;margin-bottom:6px;">Already logged today</div>
-        ${todaysLines.map(e=>{
-          const hasQty = e.qty!==undefined && e.qty!==null && e.qty!=="";
-          const label = (hasQty ? fmtNum(e.qty)+" @ " : "") + money(e.cost) + (e.supplier ? " (" + esc(e.supplier) + ")" : "");
-          return `<div class="quickbuylogrow">
-            <span>${label}</span>
+        ${todaysLines.map(e=>`<div class="quickbuylogrow">
+            <span>${purchaseLineChip(e)}</span>
             <span style="display:flex;align-items:center;gap:10px;">
               <button class="btn small" data-quickbuy-edit-line="${esc(e.id||"")}">Edit</button>
               <button class="delbtn" data-quickbuy-delete-id="${esc(e.id||"")}" title="Delete this entry">✕</button>
             </span>
-          </div>`;
-        }).join("")}
+          </div>`).join("")}
       </div>` : "";
 
     const buyForm = `
       <div class="formgrid">
-        <div class="field"><label>Quantity</label><input type="number" inputmode="decimal" step="0.01" id="quickBuyQty" value="${esc(prefillQty)}" style="font-size:20px;padding:13px;"></div>
-        <div class="field"><label>Price per unit</label><input type="number" inputmode="decimal" step="0.01" id="quickBuyCost" value="${esc(prefillCost)}" style="font-size:20px;padding:13px;" placeholder="e.g. 85.00"></div>
+        <div class="field"><label>Quantity (what you're ordering)</label><input type="number" inputmode="decimal" step="0.01" id="quickBuyQty" value="${esc(prefillQty)}" style="font-size:20px;padding:13px;"></div>
+        <div class="field"><label>Price per unit (if known)</label><input type="number" inputmode="decimal" step="0.01" id="quickBuyCost" value="${esc(prefillCost)}" style="font-size:20px;padding:13px;" placeholder="leave blank if not invoiced yet"></div>
         <div class="field"><label>Supplier</label><input type="text" id="quickBuySupplier" value="${esc(prefillSupplier)}" style="font-size:20px;padding:13px;" placeholder="optional"></div>
       </div>
-      <button class="btn primary" id="quickBuyConfirm" style="width:100%;font-size:16px;padding:15px;margin-top:14px;">${editingLine ? "✓ Save changes" : "✓ Confirm purchase"}</button>`;
+      <div class="helptext" style="margin-top:8px;">This logs it as ordered — it'll show as "Ordered" until someone in Receiving confirms it's arrived.</div>
+      <button class="btn primary" id="quickBuyConfirm" style="width:100%;font-size:16px;padding:15px;margin-top:14px;">${editingLine ? "✓ Save changes" : "✓ Confirm order"}</button>`;
 
     const unableForm = `
       <div class="field">
@@ -1596,11 +1647,11 @@ function renderQuickBuy(){
 
     const doneBadge = (r)=>{
       const lines = purchaseEntriesForDate(r.baseProduct, today);
-      if(lines.length===1){
-        const hasQty = lines[0].qty!==undefined && lines[0].qty!==null && lines[0].qty!=="";
-        return chip("✓ " + (hasQty ? fmtNum(lines[0].qty)+" @ " : "") + money(lines[0].cost), "good");
+      if(lines.length===1) return purchaseLineChip(lines[0]);
+      if(lines.length>1){
+        const allReceived = lines.every(isReceived);
+        return chip((allReceived?"✓ ":"📦 ") + lines.length + " order(s) logged", allReceived?"good":"warn");
       }
-      if(lines.length>1) return chip("✓ " + lines.length + " buys logged", "good");
       const issue = unableEntryForDate(r.baseProduct, today);
       if(issue) return chip("✕ " + issue.reason, "critical");
       return "";
@@ -1647,12 +1698,11 @@ function renderQuickBuy(){
 
   const loggedHtml = loggedRows.length ? loggedRows.map(({type,baseProduct,entry})=>{
     if(type==="purchase"){
-      const hasQty = entry.qty!==undefined && entry.qty!==null && entry.qty!=="";
       return `
       <div class="quickbuylogrow">
         <span>${esc(baseProduct)}${entry.supplier ? ` <span class="helptext">(${esc(entry.supplier)})</span>` : ""}</span>
         <span style="display:flex;align-items:center;gap:10px;">
-          <span class="num">${hasQty ? fmtNum(entry.qty)+" @ " : ""}${money(entry.cost)}</span>
+          ${purchaseLineChip(entry)}
           <button class="btn small" data-quickbuy-edit-purchase="${esc(baseProduct)}" data-quickbuy-edit-id="${esc(entry.id||"")}">Edit</button>
           <button class="delbtn" data-quickbuy-delete-id="${esc(entry.id||"")}" title="Delete this entry">✕</button>
         </span>
@@ -1671,11 +1721,11 @@ function renderQuickBuy(){
 
   return `
     <div class="pagehead">
-      <div><h2>Quick Buy</h2><p>Fast purchase entry for the market — search a product, enter what you bought (or why you couldn't), confirm. Saves straight to Purchase Costs.</p></div>
+      <div><h2>Quick Buy</h2><p>Fast order entry for the market — search a product, enter what you're ordering (or why you couldn't), confirm. Saves straight to Purchase Costs as an order, awaiting confirmation on the Receiving tab once it arrives.</p></div>
     </div>
     ${bodyHtml}
     <div class="card">
-      <div class="cardhead"><h3>Logged today</h3><div class="desc">${esc(today)} — ${todaysEntries.length} ${todaysEntries.length===1?"purchase":"purchases"}, ${todaysIssues.length} unable to purchase</div></div>
+      <div class="cardhead"><h3>Logged today</h3><div class="desc">${esc(today)} — ${todaysEntries.length} ${todaysEntries.length===1?"order":"orders"}, ${todaysIssues.length} unable to purchase</div></div>
       <div class="cardbody">${loggedHtml}</div>
     </div>`;
 }
@@ -1706,10 +1756,7 @@ function renderShoppingArchive(){
     const tableRows = shoppingArchiveRows.map(r=>{
       const purchases = purchaseEntriesForDate(r.baseProduct, shoppingArchiveDate);
       const issue = unableEntryForDate(r.baseProduct, shoppingArchiveDate);
-      const parts = purchases.map(e=>{
-        const hasQty = hasNum(e.qty);
-        return chip("✓ " + (hasQty ? fmtNum(e.qty)+" @ " : "") + money(e.cost) + (e.supplier ? " ("+esc(e.supplier)+")" : ""), "good");
-      });
+      const parts = purchases.map(e=> purchaseLineChip(e));
       if(issue) parts.push(chip("Unable: " + issue.reason, "critical"));
       return `
       <tr>
@@ -1746,6 +1793,99 @@ function renderShoppingArchive(){
     ${bodyHtml}`;
 }
 
+// ---------- Receiving ----------
+// The second half of the Order -> Received workflow: every purchase logged from Shopping List/Quick Buy
+// starts here as an open order, and stays that way — however "done" it might look on Shopping List —
+// until someone confirms it actually arrived. Solves the case that prompted this (herbs ordered from a
+// farmer in the morning, delivered after Procurement has gone for the day, with no price until the
+// invoice comes) but applies to every purchase, so nothing's numbers are ever treated as final without
+// someone having actually laid eyes on the delivery. Owner and the Receiving role can confirm; everyone
+// else who can see this tab (Procurement) gets a read-only view of what's still outstanding.
+const RECEIVING_RECENT_DAYS = 7;
+function renderReceiving(){
+  const manage = canManageReceiving();
+  const todayStr = new Date().toISOString().slice(0,10);
+  const cutoff = new Date(Date.now() - RECEIVING_RECENT_DAYS*86400000).toISOString().slice(0,10);
+
+  const pending = DATA.purchaseCosts.filter(p=> p.baseProduct && !isReceived(p))
+    .slice().sort((a,b)=> (a.date||"").localeCompare(b.date||"") || a.baseProduct.localeCompare(b.baseProduct));
+  const recentlyReceived = DATA.purchaseCosts.filter(p=> p.baseProduct && isReceived(p) && p.receivedDate >= cutoff)
+    .slice().sort((a,b)=> (b.receivedDate||"").localeCompare(a.receivedDate||""));
+  const discrepancyCount = recentlyReceived.filter(p=> receivingDiscrepancy(p)).length;
+
+  const pendingRows = pending.map(p=>{
+    const hasQty = p.qty!==undefined && p.qty!==null && p.qty!=="";
+    const hasCost = p.cost!==undefined && p.cost!==null && p.cost!=="";
+    const overdue = p.date && p.date < todayStr;
+    const orderCell = `${hasQty ? fmtNum(p.qty) : "—"} ${hasCost ? "@ "+money(p.cost) : chip("cost pending","neutral")}`;
+    const formCell = manage ? `
+      <div class="buyrow" data-receive-row="${esc(p.id||"")}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
+        <input type="number" step="0.01" class="receive-qty" placeholder="Qty" value="${esc(hasQty?p.qty:"")}" style="width:64px;">
+        <input type="number" step="0.01" class="receive-cost" placeholder="Cost/u" value="${esc(hasCost?p.cost:"")}" style="width:80px;">
+        <button class="btn primary" data-receive-tick="${esc(p.id||"")}" title="Confirm received" style="padding:2px 10px;font-size:12px;">✓ Received</button>
+      </div>` : `<span class="helptext">Awaiting confirmation</span>`;
+    return `
+    <tr>
+      <td>${esc(p.baseProduct)}</td>
+      <td>${esc(categoryFor(p.baseProduct)||"—")}</td>
+      <td class="helptext">${esc(p.date||"—")}${overdue ? ` ${chip("overdue","warn")}` : ""}</td>
+      <td>${orderCell}</td>
+      <td>${esc(p.supplier||"—")}</td>
+      <td>${esc(p.loggedBy||"—")}</td>
+      <td>${formCell}</td>
+    </tr>`;
+  }).join("");
+
+  const receivedRows = recentlyReceived.map(p=>{
+    const disc = receivingDiscrepancy(p);
+    const editing = receivingEditing.has(p.id);
+    const discFlag = disc ? chip("⚠ " + [disc.qtyDiff?"qty differs":null, disc.costDiff?"cost differs":null].filter(Boolean).join(", "), "warn") : "";
+    const editForm = manage && editing ? `
+      <div class="buyrow" data-receive-row="${esc(p.id||"")}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;margin-top:4px;">
+        <input type="number" step="0.01" class="receive-qty" placeholder="Qty" value="${esc(p.receivedQty!==undefined?p.receivedQty:"")}" style="width:64px;">
+        <input type="number" step="0.01" class="receive-cost" placeholder="Cost/u" value="${esc(p.receivedCost!==undefined?p.receivedCost:"")}" style="width:80px;">
+        <button class="btn primary" data-receive-tick="${esc(p.id||"")}" title="Save correction" style="padding:2px 10px;font-size:12px;">✓ Save</button>
+        <button class="btn" data-receive-edit-cancel="${esc(p.id||"")}" style="padding:2px 6px;font-size:12px;">✕</button>
+      </div>` : "";
+    return `
+    <tr>
+      <td>${esc(p.baseProduct)}</td>
+      <td class="helptext">${esc(p.date||"—")} → received ${esc(p.receivedDate||"—")}</td>
+      <td>${purchaseLineChip(p)} ${discFlag}</td>
+      <td>${esc(p.receivedBy||"—")}</td>
+      <td>${manage ? `<button class="btn small" data-receive-edit="${esc(p.id||"")}">${editing?"Cancel":"Correct"}</button>${editForm}` : ""}</td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Receiving</h2><p>${manage ? "Confirm each order once it's actually arrived — quantity and cost here become the real, final numbers used for costing (Sage CSV, Product Mixes)." : "What's still outstanding, and what's been confirmed recently. Read-only — Owner or Receiving confirms deliveries here."}</p></div>
+    </div>
+    <div class="cardrow">
+      <div class="stat"><div class="label">Pending delivery</div><div class="value" style="color:${pending.length?'var(--warn)':'var(--good)'}">${pending.length}</div></div>
+      <div class="stat"><div class="label">Received (last ${RECEIVING_RECENT_DAYS}d)</div><div class="value small">${recentlyReceived.length}</div></div>
+      <div class="stat"><div class="label">Discrepancies (last ${RECEIVING_RECENT_DAYS}d)</div><div class="value" style="color:${discrepancyCount?'var(--warn)':'var(--good)'}">${discrepancyCount}</div></div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Pending delivery</h3><div class="desc">${pending.length} order(s) awaiting confirmation, oldest first.</div></div></div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th>Category</th><th>Ordered</th><th>Qty @ cost</th><th>Supplier</th><th>Ordered by</th><th>${manage?"Confirm received":"Status"}</th></tr></thead>
+          <tbody>${pendingRows || `<tr><td colspan="7" class="empty">Nothing outstanding — everything logged so far has been confirmed received.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Recently received</h3><div class="desc">Confirmed in the last ${RECEIVING_RECENT_DAYS} days. A discrepancy flag means what arrived didn't match what was ordered.</div></div></div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th>Dates</th><th>Received</th><th>Received by</th><th></th></tr></thead>
+          <tbody>${receivedRows || `<tr><td colspan="5" class="empty">Nothing confirmed received in this window yet.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+}
+
 // ---------- Dashboard / Procurement Plan ----------
 function renderDashboard(){
   const allRows = procurementPlanComputed();
@@ -1757,6 +1897,9 @@ function renderDashboard(){
   const historyPeriods = DATA.salesHistory.length;
   const critPct = Number(DATA.shoppingList.criticalPct)||0.25;
   const overPct = Number(DATA.shoppingList.overstockPct)||1.5;
+  const pendingReceiving = DATA.purchaseCosts.filter(p=> p.baseProduct && !isReceived(p)).length;
+  const recentReceivingCutoff = new Date(Date.now() - RECEIVING_RECENT_DAYS*86400000).toISOString().slice(0,10);
+  const receivingDiscrepancies = DATA.purchaseCosts.filter(p=> p.baseProduct && isReceived(p) && p.receivedDate >= recentReceivingCutoff && receivingDiscrepancy(p)).length;
 
   const categories = Array.from(new Set(allRows.map(r=> r.category || "Uncategorized"))).sort();
   const categoryFilterOptions = `<option value="">All categories</option>` +
@@ -1797,6 +1940,10 @@ function renderDashboard(){
       <div class="stat"><div class="label">Flagged for review</div><div class="value" style="color:${flagged?'var(--warn)':'var(--good)'}">${flagged}</div></div>
       <div class="stat"><div class="label">Days of sales archived</div><div class="value small">${historyPeriods}</div></div>
       <div class="stat"><div class="label">Default cycle / buffer</div><div class="value small">${fmtNum(cm,2)}x / ${fmtNum(sb*100,0)}%</div></div>
+    </div>
+    <div class="cardrow">
+      <div class="stat"><div class="label">Pending receiving</div><div class="value" style="color:${pendingReceiving?'var(--warn)':'var(--good)'}">${pendingReceiving}</div></div>
+      <div class="stat"><div class="label">Receiving discrepancies (${RECEIVING_RECENT_DAYS}d)</div><div class="value" style="color:${receivingDiscrepancies?'var(--warn)':'var(--good)'}">${receivingDiscrepancies}</div></div>
     </div>
     <div class="card">
       <div class="cardhead"><div><h3>Default cover settings</h3><div class="desc">The fallback used whenever a category (safety buffer) or product (cycle length, below) doesn't have its own override.</div></div></div>
@@ -2213,7 +2360,7 @@ function renderSageImport(){
 
   return `
     <div class="pagehead">
-      <div><h2>Sage CSV</h2><p>Average Cost is pulled from Purchase Costs entries logged on the date selected below; Quantity On Hand is exported as 0. A Product Mix (composite) item's cost is built from its ingredients' costs on that same date instead — see Product Mixes for the full breakdown.</p></div>
+      <div><h2>Sage CSV</h2><p>Average Cost is pulled from Purchase Costs entries logged on the date selected below, once Receiving has confirmed them — an order still awaiting delivery (or invoice) won't show a cost here yet, so run this after Receiving is caught up for the day. Quantity On Hand is exported as 0. A Product Mix (composite) item's cost is built from its ingredients' costs on that same date instead — see Product Mixes for the full breakdown.</p></div>
       <div class="actions">
         <div class="field" style="min-width:170px;">
           <label>Purchase date</label>
@@ -2368,8 +2515,8 @@ function renderStockTake(){
 // ---------- Users ----------
 function renderUsers(){
   const users = DATA.users || [];
-  const roleLabel = {owner:"Owner", procurement:"Procurement", stocktaker:"Stock Taker"};
-  const roleOptionsFor = (current)=> ["owner","procurement","stocktaker"].map(r=>
+  const roleLabel = {owner:"Owner", procurement:"Procurement", stocktaker:"Stock Taker", receiving:"Receiving"};
+  const roleOptionsFor = (current)=> ["owner","procurement","stocktaker","receiving"].map(r=>
     `<option value="${r}" ${r===current?"selected":""}>${roleLabel[r]}</option>`).join("");
 
   const rows = users.map((u,i)=>{
@@ -2478,26 +2625,41 @@ function wireTabEvents(){
         const qtyVal = container.querySelector(".buy-qty").value;
         const costVal = container.querySelector(".buy-cost").value;
         const supplierVal = (container.querySelector(".buy-supplier")||{}).value || "";
-        if(!costVal){ toast("Enter a price to mark this bought"); return; }
+        // qty is what's actually being ordered, so it's required; cost is often genuinely not known yet
+        // (e.g. herbs invoiced later) — leave it blank and it'll show as "Ordered" until Receiving fills
+        // it in when the delivery is confirmed.
+        if(!qtyVal){ toast("Enter a quantity to log this order"); return; }
         const today = new Date().toISOString().slice(0,10);
         const id = editId || newId();
+        // logPurchase overwrites the WHOLE row on the backend (see Code.gs's upsertListRow_) — editing an
+        // order that's already been confirmed received must carry its receivedQty/receivedCost/receivedBy/
+        // receivedDate forward, or correcting a typo in what was ordered would silently un-receive it.
+        const existingRow = editId ? DATA.purchaseCosts.find(p=> p.id===editId) : null;
         DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== id);
         // can't be "unable to purchase" something you're now logging as bought — mirrors what the
         // backend's logPurchase action already does server-side (see handlePurchaseAction_ in Code.gs);
         // without clearing it here too, a stale "Unable: ..." chip would keep showing next to the new
         // purchase until the next full reload
         DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
-        const entry = {id, date:today, baseProduct:bp, cost:Number(costVal)};
-        if(qtyVal!==""){ entry.qty = Number(qtyVal); }
+        const entry = {id, date:today, baseProduct:bp, qty:Number(qtyVal)};
+        if(costVal!==""){ entry.cost = Number(costVal); } // left blank when not yet invoiced — see the comment above
         if(supplierVal.trim()) entry.supplier = supplierVal.trim();
         if(currentUser) entry.loggedBy = currentUser.name;
+        if(existingRow && existingRow.receivedDate){
+          entry.receivedQty = existingRow.receivedQty;
+          entry.receivedCost = existingRow.receivedCost;
+          entry.receivedBy = existingRow.receivedBy;
+          entry.receivedDate = existingRow.receivedDate;
+        }
         DATA.purchaseCosts.push(entry);
         shoppingBuyEditing.delete(bp);
         shoppingIssueEditing.delete(bp);
         // additive on the backend (touches only this one row, matched by its own id) so this can never
         // collide with someone else logging a different purchase — e.g. from Quick Buy — around the
-        // same moment, and buying the same product from two suppliers today is just two separate rows
-        persistPurchaseAction({action:"logPurchase", entry}, "Marked " + bp + " as bought");
+        // same moment, and buying the same product from two suppliers today is just two separate rows.
+        // This logs it as an ORDER, not an instant purchase — it stays "Ordered" until someone in
+        // Receiving confirms it actually arrived (see the Receiving tab / receivePurchase in Code.gs).
+        persistPurchaseAction({action:"logPurchase", entry}, "Logged order for " + bp);
       });
     });
     document.querySelectorAll("[data-buy-addnew]").forEach(btn=>{
@@ -2628,16 +2790,29 @@ function wireTabEvents(){
           const qtyVal = document.getElementById("quickBuyQty").value;
           const costVal = document.getElementById("quickBuyCost").value;
           const supplierVal = (document.getElementById("quickBuySupplier")||{}).value || "";
-          if(!costVal){ toast("Enter a price to confirm"); return; }
+          // qty is what's actually being ordered, so it's required; cost is often genuinely not known yet
+          // (e.g. herbs invoiced later) — leave it blank and it'll show as "Ordered" until Receiving fills
+          // it in when the delivery is confirmed.
+          if(!qtyVal){ toast("Enter a quantity to confirm"); return; }
           const today = new Date().toISOString().slice(0,10);
           const bp = quickBuySelected;
           const id = quickBuyEditingId || newId();
+          // logPurchase overwrites the WHOLE row on the backend — editing an order that's already been
+          // confirmed received must carry its receivedQty/receivedCost/receivedBy/receivedDate forward,
+          // or correcting a typo in what was ordered would silently un-receive it.
+          const existingRow = quickBuyEditingId ? DATA.purchaseCosts.find(p=> p.id===quickBuyEditingId) : null;
           DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== id);
           DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
-          const entry = {id, date:today, baseProduct:bp, cost:Number(costVal)};
-          if(qtyVal!==""){ entry.qty = Number(qtyVal); }
+          const entry = {id, date:today, baseProduct:bp, qty:Number(qtyVal)};
+          if(costVal!==""){ entry.cost = Number(costVal); } // left blank when not yet invoiced — see the comment above
           if(supplierVal.trim()) entry.supplier = supplierVal.trim();
           if(currentUser) entry.loggedBy = currentUser.name;
+          if(existingRow && existingRow.receivedDate){
+            entry.receivedQty = existingRow.receivedQty;
+            entry.receivedCost = existingRow.receivedCost;
+            entry.receivedBy = existingRow.receivedBy;
+            entry.receivedDate = existingRow.receivedDate;
+          }
           DATA.purchaseCosts.push(entry);
           quickBuySelected = null;
           quickBuyEditingId = null;
@@ -2645,8 +2820,9 @@ function wireTabEvents(){
           // additive on the backend — this is the fix for two buyers logging purchases from the market
           // at the same time: it only ever touches this one row (matched by its own id), so it can
           // never collide with, wait on, or overwrite whatever the other person is logging right now,
-          // and buying the same product from two suppliers today is just two separate rows
-          persistPurchaseAction({action:"logPurchase", entry}, "Logged " + bp);
+          // and buying the same product from two suppliers today is just two separate rows. This logs it
+          // as an ORDER, not an instant purchase — see the Receiving tab / receivePurchase in Code.gs.
+          persistPurchaseAction({action:"logPurchase", entry}, "Logged order for " + bp);
         });
       }
       const unableBtn = document.getElementById("quickBuyLogUnable");
@@ -2728,6 +2904,49 @@ function wireTabEvents(){
       shoppingArchivePending = shoppingArchiveDate;
       loadShoppingArchive(shoppingArchiveDate);
     }
+  }
+
+  if(currentTab==="receiving"){
+    // Confirms a pending order (always visible, no toggle needed) OR saves a correction to an
+    // already-received line (only reachable via data-receive-edit below) — same handler either way,
+    // since both are just "submit these received-qty/received-cost inputs for this id".
+    document.querySelectorAll("[data-receive-tick]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const container = btn.closest("[data-receive-row]");
+        const id = container.dataset.receiveRow;
+        const qtyVal = container.querySelector(".receive-qty").value;
+        const costVal = container.querySelector(".receive-cost").value;
+        if(!qtyVal){ toast("Enter the quantity actually received"); return; }
+        const existing = DATA.purchaseCosts.find(p=> p.id===id);
+        if(!existing){ toast("That order no longer exists"); return; }
+        existing.receivedQty = Number(qtyVal);
+        if(costVal!==""){ existing.receivedCost = Number(costVal); } else { delete existing.receivedCost; }
+        if(currentUser) existing.receivedBy = currentUser.name;
+        existing.receivedDate = existing.receivedDate || new Date().toISOString().slice(0,10);
+        receivingEditing.delete(id);
+        // additive on the backend (touches only this one row, by its own id) — see receivePurchase in
+        // Code.gs, which merges these fields onto the existing order rather than overwriting the row,
+        // so the original qty/cost/supplier/loggedBy it was ordered under are preserved.
+        persistPurchaseAction({
+          action:"receivePurchase", id,
+          receivedQty: existing.receivedQty, receivedCost: existing.receivedCost,
+          receivedBy: existing.receivedBy, receivedDate: existing.receivedDate,
+        }, "Marked " + existing.baseProduct + " as received");
+      });
+    });
+    document.querySelectorAll("[data-receive-edit]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const id = btn.dataset.receiveEdit;
+        if(receivingEditing.has(id)) receivingEditing.delete(id); else receivingEditing.add(id);
+        render();
+      });
+    });
+    document.querySelectorAll("[data-receive-edit-cancel]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        receivingEditing.delete(btn.dataset.receiveEditCancel);
+        render();
+      });
+    });
   }
 
   if(currentTab==="dashboard"){
@@ -3031,6 +3250,14 @@ function wireTabEvents(){
           if(l.qty!==undefined) entry.qty = l.qty;
           if(l.supplier) entry.supplier = l.supplier;
           if(currentUser) entry.loggedBy = currentUser.name;
+          // This screen is for typing in an already-complete, known purchase record (both qty and cost
+          // required up front) — distinct from Quick Buy/Shopping List's live day-to-day ordering, where
+          // cost is often genuinely unknown until later. So unlike THAT flow, a line entered here counts
+          // as received immediately; it won't show up in the Receiving queue at all.
+          entry.receivedQty = entry.qty;
+          entry.receivedCost = entry.cost;
+          entry.receivedBy = entry.loggedBy;
+          entry.receivedDate = dateSaved;
           DATA.purchaseCosts.push(entry);
         });
         purchaseDraftLines = [];
