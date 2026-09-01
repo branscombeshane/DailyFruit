@@ -1455,8 +1455,12 @@ function renderQuickBuy(){
     categories.map(c=>`<option value="${esc(c)}" ${c===quickBuyCategoryFilter?"selected":""}>${esc(c)}</option>`).join("");
   let candidates = quickBuyCategoryFilter ? all.filter(r=> (r.category||"Uncategorized")===quickBuyCategoryFilter) : all;
   if(search) candidates = candidates.filter(r=> r.baseProduct.toLowerCase().includes(search));
-  const todaysEntries = DATA.purchaseCosts.filter(p=> p.date===today);
-  const todaysIssues = DATA.purchaseIssues.filter(p=> p.date===today);
+  // baseProduct is required for every real entry (see distinctBaseProducts/weightedCostMap_ etc., which
+  // already skip rows without one) — a stray row with a blank baseProduct cell but today's date isn't
+  // actionable data, and crashed the "Logged today" sort below (localeCompare on undefined) when one
+  // turned up in a real sheet, so it's filtered out here at the source rather than patched at each use.
+  const todaysEntries = DATA.purchaseCosts.filter(p=> p.date===today && p.baseProduct);
+  const todaysIssues = DATA.purchaseIssues.filter(p=> p.date===today && p.baseProduct);
 
   let bodyHtml;
   if(quickBuySelected){
