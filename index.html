@@ -1087,6 +1087,16 @@ function render(){
   const selStart = hasSelectionApi ? activeEl.selectionStart : null;
   const selEnd = hasSelectionApi ? activeEl.selectionEnd : null;
 
+  // preserve scroll position too, for the same reason — every click that changes anything (e.g.
+  // "Log order" on one row of a long Shopping List) re-renders the whole page, which would otherwise
+  // reset a scrolled-down table straight back to the top every single time. .tablewrap is the
+  // independently-scrolling region used by every long table (Shopping List, Dashboard, Receiving,
+  // Purchase Costs' per-date groups, ...); matched back up by position after the rebuild, since the
+  // elements themselves are destroyed and recreated, not moved. The outer page scroll is preserved too,
+  // in case the page itself is taller than the viewport.
+  const pageScrollY = window.scrollY;
+  const wrapScrollTops = Array.from(document.querySelectorAll(".tablewrap")).map(el=> el.scrollTop);
+
   const sidebar = document.querySelector(".sidebar");
   if(!dataLoaded){
     if(sidebar) sidebar.style.display = "none";
@@ -1147,6 +1157,14 @@ function render(){
       }
     }
   }
+
+  // restore scroll position captured at the top, now that the new DOM exists — matched by position,
+  // since a page's .tablewrap elements appear in the same order every render even though the elements
+  // themselves are brand new each time. Harmless no-op on a page with no .tablewrap (login, loading).
+  document.querySelectorAll(".tablewrap").forEach((el,i)=>{
+    if(wrapScrollTops[i]!==undefined) el.scrollTop = wrapScrollTops[i];
+  });
+  if(pageScrollY) window.scrollTo(0, pageScrollY);
 }
 
 // ---------- Data loading ----------
