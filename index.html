@@ -303,6 +303,7 @@ function applyDataDefaults(d){
   if(!d.salesHistory) d.salesHistory = []; // backward-compatible default for backups predating automatic sales history archiving
   if(!d.categoryBuffers) d.categoryBuffers = {}; // backward-compatible default: per-category safety buffer % overrides (falls back to the global safety buffer when unset)
   if(!d.categoryCostBuffers) d.categoryCostBuffers = {}; // backward-compatible default: per-category cost (wastage) buffer %, Sage CSV only — distinct from categoryBuffers (a demand buffer)
+  if(!d.shoppingListSnapshotDates) d.shoppingListSnapshotDates = []; // set by doGet, not saved by the app itself — defaults to empty until the nightly snapshot trigger has run at least once
   if(!d.productCycles) d.productCycles = {}; // backward-compatible default: per-product replenishment cycle length overrides (falls back to the global cover multiplier when unset)
   if(!d.productCeilings) d.productCeilings = {}; // backward-compatible default: per-product shelf-life hold ceilings (no cap when unset)
   if(!d.categories) d.categories = []; // backward-compatible default for backups predating explicit category management (name + hidden flag)
@@ -378,6 +379,15 @@ let shoppingCategoryFilter = "";
 let shoppingStatusFilter = "";
 let shoppingBoughtTodayOnly = false; // toggled by the "Bought today" summary tile — ANDs with the status/category filters above, since it's a separate dimension (has anything been logged today), not another status
 let shoppingBuyEditing = new Map(); // baseProduct -> id of the purchase line being edited, or "new" when adding another line, for whichever rows are currently showing the inline buy-entry inputs
+let shoppingIssueEditing = new Set(); // baseProducts currently showing the inline "unable to purchase" reason input on the Shopping List
+// Shopping List Archive: a picked-date view of a past day's snapshot (see snapshotShoppingListToday in
+// Code.gs). shoppingArchiveRows is null until fetched for the CURRENTLY selected date (an empty array
+// once fetched means genuinely no rows, not "not loaded yet") — the fetch is on-demand, not part of the
+// main data load, since snapshot history could grow to a lot of rows over time.
+let shoppingArchiveDate = "";
+let shoppingArchiveRows = null;
+let shoppingArchiveError = "";
+let shoppingArchivePending = null; // date currently being fetched, if any — guards against firing the same fetch twice
 let quickBuySearch = "";
 let quickBuyCategoryFilter = "";
 let quickBuySelected = null; // baseProduct currently open in the Quick Buy entry screen, or null for the search/pick list
@@ -388,6 +398,7 @@ const NAV = [
   {group:"Shopping List", items:[
     {id:"shoppinglist", label:"Shopping List"},
     {id:"quickbuy", label:"Quick Buy"},
+    {id:"shoppingarchive", label:"Shopping List Archive"},
   ]},
   {group:"Holding Numbers", items:[
     {id:"dashboard", label:"Calculated Holdings"},
@@ -419,8 +430,8 @@ if(!TABS.some(t=>t.id===currentTab)){
 // who can see which tab. Owner: everything. Procurement: the day-to-day buying workflow.
 // Stock Taker: just counting stock (their Shopping List view is further restricted to read-only inside renderShoppingList/renderBuyCell).
 const ROLE_TABS = {
-  owner: ["shoppinglist","quickbuy","dashboard","salesdata","itemsetup","recipes","purchase","sageimport","stocktake","users","backup"],
-  procurement: ["shoppinglist","quickbuy","purchase","stocktake"],
+  owner: ["shoppinglist","quickbuy","shoppingarchive","dashboard","salesdata","itemsetup","recipes","purchase","sageimport","stocktake","users","backup"],
+  procurement: ["shoppinglist","quickbuy","shoppingarchive","purchase","sageimport","stocktake"],
   stocktaker: ["shoppinglist","stocktake"],
 };
 function roleCanAccessTab(role, tabId){
@@ -833,6 +844,27 @@ async function loadData(){
   return applyDataDefaults(fresh);
 }
 
+// Fetches one day's archived Shopping List snapshot on demand (see Code.gs's doGet handling of
+// ?action=shoppingListSnapshot) — not part of the main data load, since snapshot history can grow to a
+// lot of rows over many days and most sessions never open the Archive tab at all. No synchronous
+// render() call anywhere in this function on purpose: it's invoked from inside wireTabEvents (which
+// runs at the end of every render()), and calling render() again before the first await would re-enter
+// render() while the current one is still on the call stack — everything here happens after the await,
+// so the eventual render() is always a fresh call, never a nested one.
+async function loadShoppingArchive(date){
+  try{
+    const res = await fetch(API_URL + "?action=shoppingListSnapshot&date=" + encodeURIComponent(date), {cache: "no-store"});
+    if(!res.ok) throw new Error("Server returned " + res.status);
+    const result = await res.json();
+    if(!result.ok) throw new Error(result.error || "Could not load that day's list");
+    if(date === shoppingArchiveDate){ shoppingArchiveRows = result.rows || []; shoppingArchiveError = ""; }
+  }catch(e){
+    if(date === shoppingArchiveDate){ shoppingArchiveError = "Could not load that day's Shopping List — check your connection and try again."; shoppingArchiveRows = []; }
+  }
+  if(shoppingArchivePending === date) shoppingArchivePending = null;
+  render();
+}
+
 // Full-object save — used by Item Setup, Product Mixes, Settings, Users, Sales upload, Stock Take,
 // and Restore. Sends the WHOLE DATA object; the backend replaces the corresponding sheet(s) from it.
 // Fine when one person edits at a time, which is why it carries the version check (see Code.gs's
@@ -1008,6 +1040,7 @@ function render(){
     let pageHtml = "";
     if(currentTab==="shoppinglist") pageHtml = renderShoppingList();
     else if(currentTab==="quickbuy") pageHtml = renderQuickBuy();
+    else if(currentTab==="shoppingarchive") pageHtml = renderShoppingArchive();
     else if(currentTab==="dashboard") pageHtml = renderDashboard();
     else if(currentTab==="itemsetup") pageHtml = renderItemSetup();
     else if(currentTab==="recipes") pageHtml = renderRecipes();
@@ -1238,25 +1271,37 @@ function parseSalesCsvText(text){
 
 // ---------- Shopping List ----------
 // Renders every purchase LINE logged today for this base product as its own chip (buying the same
-// product from two suppliers on the same day is normal now, not a duplicate) — plus, for roles that
-// can manage purchases, an Edit/Delete per line and an "Add another" control. shoppingBuyEditing maps
-// baseProduct -> the id of the line currently being edited, or the string "new" when adding a fresh one.
+// product from two suppliers on the same day is normal now, not a duplicate), plus — mirroring Quick
+// Buy — the "unable to purchase" reason for today, if one's been logged. For roles that can manage
+// purchases this includes Edit/Delete per line, an "Add another" control, and a "Mark unable to buy"
+// control. shoppingBuyEditing maps baseProduct -> the id of the purchase line currently being edited
+// (or "new" when adding a fresh one); shoppingIssueEditing is the set of baseProducts currently showing
+// the inline "unable to purchase" reason input.
 function renderBuyCell(r, today){
   const bp = r.baseProduct;
   const entries = purchaseEntriesForDate(bp, today);
+  const issue = unableEntryForDate(bp, today);
   const lineLabel = (e)=>{
     const hasQty = e.qty!==undefined && e.qty!==null && e.qty!=="";
     return "✓ " + (hasQty ? fmtNum(e.qty)+" @ " : "") + money(e.cost) + (e.supplier ? " (" + esc(e.supplier) + ")" : "");
   };
+  const issueChip = issue ? `<span style="display:inline-flex;align-items:center;gap:4px;">
+      ${chip("Unable: " + issue.reason,"critical")}
+      ${canManagePurchases() ? `<button class="btn" data-issue-edit="${esc(bp)}" style="padding:1px 6px;font-size:11px;">Edit</button>
+      <button class="delbtn" data-issue-delete="${esc(bp)}" title="Delete this entry">✕</button>` : ""}
+    </span>` : "";
 
   if(!canManagePurchases()){
-    // read-only role (Stock Taker): show what's been bought, but no way to log or edit it here
-    if(!entries.length) return `<span class="helptext">—</span>`;
-    return entries.map(e=> chip(lineLabel(e),"good")).join(" ");
+    // read-only role (Stock Taker): show what's been bought (or why it wasn't), no way to log/edit here
+    const parts = entries.map(e=> chip(lineLabel(e),"good"));
+    if(issue) parts.push(chip("Unable: " + issue.reason,"critical"));
+    if(!parts.length) return `<span class="helptext">—</span>`;
+    return parts.join(" ");
   }
 
   const editingVal = shoppingBuyEditing.get(bp); // undefined = no form open; "new" = adding a line; else = id of the line being edited
   const editingExisting = (editingVal && editingVal!=="new") ? entries.find(e=>e.id===editingVal) : null;
+  const issueEditing = shoppingIssueEditing.has(bp);
 
   const lineChips = entries.map(e=> `
     <span style="display:inline-flex;align-items:center;gap:4px;">
@@ -1265,10 +1310,23 @@ function renderBuyCell(r, today){
       <button class="delbtn" data-buy-delete-id="${esc(e.id||"")}" data-buy-delete-bp="${esc(bp)}" title="Delete this entry">✕</button>
     </span>`).join("");
 
+  if(issueEditing){
+    return `<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;">
+      ${lineChips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">${lineChips}</div>` : ""}
+      <div class="buyrow" data-issue-row="${esc(bp)}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
+        <input type="text" class="issue-reason" placeholder="Reason" value="${esc(issue?issue.reason:"")}" style="width:150px;">
+        <button class="btn primary" data-issue-tick="${esc(bp)}" title="Save" style="padding:2px 10px;font-size:12px;background:var(--critical);border-color:var(--critical);">✕</button>
+        <button class="btn" data-issue-cancel="${esc(bp)}" style="padding:2px 6px;font-size:12px;" title="Close without saving">✕</button>
+      </div>
+    </div>`;
+  }
+
   if(!editingVal){
     return `<div data-buy-row="${esc(bp)}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
       ${lineChips}
+      ${issueChip}
       <button class="btn" data-buy-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ ${entries.length?"Add another":"Log buy"}</button>
+      ${!issue ? `<button class="btn" data-issue-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ Unable to buy</button>` : ""}
     </div>`;
   }
 
@@ -1567,6 +1625,72 @@ function renderQuickBuy(){
       <div class="cardhead"><h3>Logged today</h3><div class="desc">${esc(today)} — ${todaysEntries.length} ${todaysEntries.length===1?"purchase":"purchases"}, ${todaysIssues.length} unable to purchase</div></div>
       <div class="cardbody">${loggedHtml}</div>
     </div>`;
+}
+
+// ---------- Shopping List Archive ----------
+// A day-by-day historical record: each row is exactly what the live Shopping List said at snapshot
+// time (see Code.gs's snapshotShoppingListToday, which runs once a day via a time-based trigger), not
+// a live recalculation — so it stays accurate even after settings (safety buffers, cycle lengths) are
+// changed later. Purchases/"unable to purchase" for that date are read live from DATA.purchaseCosts/
+// purchaseIssues — those are already dated and permanent, no separate archiving needed for them.
+function renderShoppingArchive(){
+  const dates = DATA.shoppingListSnapshotDates || [];
+  const dateOptions = dates.length
+    ? `<option value="">Select a date…</option>` + dates.map(d=>`<option value="${esc(d)}" ${d===shoppingArchiveDate?"selected":""}>${esc(d)}</option>`).join("")
+    : `<option value="">No snapshots yet</option>`;
+
+  let bodyHtml;
+  if(!dates.length){
+    bodyHtml = `<div class="banner warn">No archived Shopping Lists yet. This fills in automatically once a day — see the "ONE-TIME SETUP" note above setupDailyShoppingListSnapshotTrigger in Code.gs if that hasn't been set up yet. The first entry appears the day after it's installed.</div>`;
+  } else if(!shoppingArchiveDate){
+    bodyHtml = `<div class="empty">Pick a date above to see that day's Shopping List.</div>`;
+  } else if(shoppingArchiveError){
+    bodyHtml = `<div class="banner warn">${esc(shoppingArchiveError)}</div>`;
+  } else if(shoppingArchiveRows===null){
+    bodyHtml = `<div class="empty">Loading…</div>`;
+  } else {
+    const hasNum = v=> v!==undefined && v!==null && v!=="";
+    const tableRows = shoppingArchiveRows.map(r=>{
+      const purchases = purchaseEntriesForDate(r.baseProduct, shoppingArchiveDate);
+      const issue = unableEntryForDate(r.baseProduct, shoppingArchiveDate);
+      const parts = purchases.map(e=>{
+        const hasQty = hasNum(e.qty);
+        return chip("✓ " + (hasQty ? fmtNum(e.qty)+" @ " : "") + money(e.cost) + (e.supplier ? " ("+esc(e.supplier)+")" : ""), "good");
+      });
+      if(issue) parts.push(chip("Unable: " + issue.reason, "critical"));
+      return `
+      <tr>
+        <td>${esc(r.baseProduct)}</td>
+        <td>${esc(r.category||"—")}</td>
+        <td>${shoppingStatusChip(r.status)}</td>
+        <td class="num">${hasNum(r.currentStock) ? fmtNum(r.currentStock) : "—"}</td>
+        <td class="helptext">${esc(r.stockDate||"—")}</td>
+        <td class="num">${hasNum(r.recommended) ? fmtNum(r.recommended,0) : "—"}</td>
+        <td class="num">${hasNum(r.toBuy) ? fmtNum(r.toBuy,0) : "—"}</td>
+        <td>${esc(r.procUnit||"—")}</td>
+        <td>${parts.join(" ") || `<span class="helptext">—</span>`}</td>
+      </tr>`;
+    }).join("");
+    bodyHtml = `
+    <div class="card">
+      <div class="cardhead"><div><h3>${esc(shoppingArchiveDate)}</h3><div class="desc">${shoppingArchiveRows.length} product(s) — exactly as the Shopping List stood that evening, not recalculated with today's settings.</div></div></div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;max-height:640px;overflow-y:auto;"><table>
+          <thead><tr><th>Base product</th><th>Category</th><th>Status</th><th class="num">Stock that day</th><th>Counted on</th><th class="num">Holding target</th><th class="num">Suggested buy</th><th>Unit</th><th>Purchases that day</th></tr></thead>
+          <tbody>${tableRows || `<tr><td colspan="9" class="empty">No products recorded for this date.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+  }
+
+  return `
+    <div class="pagehead">
+      <div><h2>Shopping List Archive</h2><p>A day-by-day record of the Shopping List, captured automatically once a day — exactly what it said at the time, including what was bought or marked unable to purchase, so you can look back at any past date.</p></div>
+      <div class="actions">
+        <div class="field" style="min-width:200px;"><label>Date</label><select id="shoppingArchiveDateSel">${dateOptions}</select></div>
+      </div>
+    </div>
+    ${bodyHtml}`;
 }
 
 // ---------- Dashboard / Procurement Plan ----------
@@ -2305,12 +2429,18 @@ function wireTabEvents(){
         const today = new Date().toISOString().slice(0,10);
         const id = editId || newId();
         DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== id);
+        // can't be "unable to purchase" something you're now logging as bought — mirrors what the
+        // backend's logPurchase action already does server-side (see handlePurchaseAction_ in Code.gs);
+        // without clearing it here too, a stale "Unable: ..." chip would keep showing next to the new
+        // purchase until the next full reload
+        DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
         const entry = {id, date:today, baseProduct:bp, cost:Number(costVal)};
         if(qtyVal!==""){ entry.qty = Number(qtyVal); }
         if(supplierVal.trim()) entry.supplier = supplierVal.trim();
         if(currentUser) entry.loggedBy = currentUser.name;
         DATA.purchaseCosts.push(entry);
         shoppingBuyEditing.delete(bp);
+        shoppingIssueEditing.delete(bp);
         // additive on the backend (touches only this one row, matched by its own id) so this can never
         // collide with someone else logging a different purchase — e.g. from Quick Buy — around the
         // same moment, and buying the same product from two suppliers today is just two separate rows
@@ -2319,12 +2449,14 @@ function wireTabEvents(){
     });
     document.querySelectorAll("[data-buy-addnew]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
+        shoppingIssueEditing.delete(btn.dataset.buyAddnew); // buying and "unable to buy" are mutually exclusive for the same product/day
         shoppingBuyEditing.set(btn.dataset.buyAddnew, "new");
         render();
       });
     });
     document.querySelectorAll("[data-buy-edit]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
+        shoppingIssueEditing.delete(btn.dataset.buyEdit);
         shoppingBuyEditing.set(btn.dataset.buyEdit, btn.dataset.buyEditId || "new");
         render();
       });
@@ -2342,6 +2474,55 @@ function wireTabEvents(){
         DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== id);
         shoppingBuyEditing.delete(bp);
         persistPurchaseAction({action:"deletePurchaseLog", id}, "Deleted logged purchase for " + bp);
+      });
+    });
+    // "Unable to purchase" on the Shopping List — mirrors Quick Buy's Unable-to-purchase form, but
+    // inline in the Bought-today cell so it's visible (and editable) right from this list too.
+    document.querySelectorAll("[data-issue-addnew]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        shoppingBuyEditing.delete(btn.dataset.issueAddnew);
+        shoppingIssueEditing.add(btn.dataset.issueAddnew);
+        render();
+      });
+    });
+    document.querySelectorAll("[data-issue-edit]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        shoppingBuyEditing.delete(btn.dataset.issueEdit);
+        shoppingIssueEditing.add(btn.dataset.issueEdit);
+        render();
+      });
+    });
+    document.querySelectorAll("[data-issue-cancel]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        shoppingIssueEditing.delete(btn.dataset.issueCancel);
+        render();
+      });
+    });
+    document.querySelectorAll("[data-issue-tick]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const container = btn.closest("[data-issue-row]");
+        const bp = container.dataset.issueRow;
+        const reason = container.querySelector(".issue-reason").value.trim();
+        if(!reason){ toast("Enter a reason first"); return; }
+        const today = new Date().toISOString().slice(0,10);
+        DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+        // can't be "unable to purchase" something already bought (from any supplier) today
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+        const entry = {date:today, baseProduct:bp, reason};
+        if(currentUser) entry.loggedBy = currentUser.name;
+        DATA.purchaseIssues.push(entry);
+        shoppingIssueEditing.delete(bp);
+        shoppingBuyEditing.delete(bp);
+        persistPurchaseAction({action:"logPurchaseIssue", entry}, "Logged " + bp + " as unable to purchase");
+      });
+    });
+    document.querySelectorAll("[data-issue-delete]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const bp = btn.dataset.issueDelete;
+        const today = new Date().toISOString().slice(0,10);
+        DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+        shoppingIssueEditing.delete(bp);
+        persistPurchaseAction({action:"deletePurchaseIssue", date:today, baseProduct:bp}, "Deleted unable-to-purchase entry for " + bp);
       });
     });
   }
@@ -2474,6 +2655,26 @@ function wireTabEvents(){
         persistPurchaseAction({action:"deletePurchaseIssue", date:today, baseProduct:bp}, "Deleted unable-to-purchase entry for " + bp);
       });
     });
+  }
+
+  if(currentTab==="shoppingarchive"){
+    const dateSel = document.getElementById("shoppingArchiveDateSel");
+    if(dateSel) dateSel.addEventListener("change", (e)=>{
+      shoppingArchiveDate = e.target.value;
+      shoppingArchiveRows = null;
+      shoppingArchiveError = "";
+      if(shoppingArchiveDate) loadShoppingArchive(shoppingArchiveDate);
+      render();
+    });
+    // default to the most recent snapshot the first time this tab is opened, so there's something to
+    // look at without making someone pick a date first
+    if(!shoppingArchiveDate && DATA.shoppingListSnapshotDates && DATA.shoppingListSnapshotDates.length){
+      shoppingArchiveDate = DATA.shoppingListSnapshotDates[0];
+    }
+    if(shoppingArchiveDate && shoppingArchiveRows===null && shoppingArchivePending!==shoppingArchiveDate){
+      shoppingArchivePending = shoppingArchiveDate;
+      loadShoppingArchive(shoppingArchiveDate);
+    }
   }
 
   if(currentTab==="dashboard"){
