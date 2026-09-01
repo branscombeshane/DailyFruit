@@ -270,7 +270,7 @@ function emptyDataShape(){
     users: [{name:"Owner", pin:"1234", role:"owner"}],
     purchaseIssues: [], salesHistory: [],
     categoryBuffers: {}, productCycles: {}, productCeilings: {},
-    categories: [],
+    categories: [], categoryCostBuffers: {},
   };
 }
 
@@ -299,6 +299,7 @@ function applyDataDefaults(d){
   if(!d.purchaseIssues) d.purchaseIssues = []; // backward-compatible default for backups predating "Unable to purchase" reasons
   if(!d.salesHistory) d.salesHistory = []; // backward-compatible default for backups predating automatic sales history archiving
   if(!d.categoryBuffers) d.categoryBuffers = {}; // backward-compatible default: per-category safety buffer % overrides (falls back to the global safety buffer when unset)
+  if(!d.categoryCostBuffers) d.categoryCostBuffers = {}; // backward-compatible default: per-category cost (wastage) buffer %, Sage CSV only — distinct from categoryBuffers (a demand buffer)
   if(!d.productCycles) d.productCycles = {}; // backward-compatible default: per-product replenishment cycle length overrides (falls back to the global cover multiplier when unset)
   if(!d.productCeilings) d.productCeilings = {}; // backward-compatible default: per-product shelf-life hold ceilings (no cap when unset)
   if(!d.categories) d.categories = []; // backward-compatible default for backups predating explicit category management (name + hidden flag)
@@ -568,6 +569,16 @@ function categoryBufferFor(categoryKey){
   if(v!==undefined && v!==null && v!=="") return Number(v);
   return Number(DATA.procurementPlan.safetyBuffer)||0;
 }
+// Category COST buffer: an owner-set % markup on top of average cost, to account for wastage/shrink.
+// Used only by the Sage CSV export (see applyCostBuffers_/sageImportComputed below) — completely
+// separate from categoryBufferFor above, which is a demand/safety-stock buffer for Calculated Holdings.
+// Unlike that one, there's no sensible global default here, so an unset category just gets 0%.
+function categoryCostBufferFor(categoryKey){
+  const key = categoryKey || "Uncategorized";
+  const v = DATA.categoryCostBuffers ? DATA.categoryCostBuffers[key] : undefined;
+  if(v!==undefined && v!==null && v!=="") return Number(v);
+  return 0;
+}
 // Replenishment cycle length (in archived periods) for a product: how many periods of cover to hold
 // before the next restock. Falls back to the global cover multiplier when a product has no override,
 // since cycle length varies product to product (some restock weekly, some twice a week).
@@ -757,9 +768,22 @@ function itemCostPerUnit(itemName, pm, visiting){
   return round2(total);
 }
 
+// Applies each base product's category cost (wastage) buffer on top of a purchase cost map — Sage CSV
+// only. Scaling the base-product costs before they reach itemCostPerUnit means a Product Mix's cost
+// automatically inherits its ingredients' buffered costs through that function's existing recursion,
+// with no special-casing needed here for composite items.
+function applyCostBuffers_(pm){
+  const out = {};
+  Object.keys(pm).forEach(bp=>{
+    const buf = categoryCostBufferFor(categoryFor(bp));
+    out[bp] = buf ? round2(pm[bp] * (1 + buf)) : pm[bp];
+  });
+  return out;
+}
+
 function sageImportComputed(date){
   const derived = itemSetupDerived();
-  const pm = purchaseCostMap(date);
+  const pm = applyCostBuffers_(purchaseCostMap(date));
   return derived.map(it=>{
     const newCost = itemCostPerUnit(it.item, pm);
     return {
@@ -1981,6 +2005,9 @@ function renderSageImport(){
       <td class="helptext">${esc(r.item)}</td>
     </tr>`).join("");
 
+  const bufferCats = distinctCategories();
+  const bufferFields = bufferCats.map(c=>`<div class="field"><label>${esc(c)} %</label><input class="rowinput num" data-sagebuffer-input="${esc(c)}" value="${DATA.categoryCostBuffers[c]!==undefined && DATA.categoryCostBuffers[c]!==null ? round2(DATA.categoryCostBuffers[c]*100) : ""}" placeholder="0"></div>`).join("");
+
   return `
     <div class="pagehead">
       <div><h2>Sage CSV</h2><p>Average Cost is pulled from Purchase Costs entries logged on the date selected below; Quantity On Hand is exported as 0. A Product Mix (composite) item's cost is built from its ingredients' costs on that same date instead — see Product Mixes for the full breakdown.</p></div>
@@ -1994,7 +2021,15 @@ function renderSageImport(){
       </div>
     </div>
     <div class="card">
-      <div class="cardhead"><h3>Export rows</h3><div class="desc">${rows.length} row(s) for ${esc(sageDateFilter||"—")} — matches the "Item Code, Average Cost, Quantity On Hand" import format.</div></div>
+      <div class="cardhead"><div><h3>Category wastage buffers</h3><div class="desc">A % markup added on top of average cost for every product in a category, to account for wastage/shrink — affects only the cost figures shown and exported on this page (Quick Buy, Shopping List and Product Mixes are unaffected). Leave blank for no markup.</div></div><button class="btn primary" id="saveSageBuffers">Save buffers</button></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          ${bufferFields || `<div class="empty">No categories set up yet.</div>`}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><h3>Export rows</h3><div class="desc">${rows.length} row(s) for ${esc(sageDateFilter||"—")} — matches the "Item Code, Average Cost, Quantity On Hand" import format. Costs below include any wastage buffer set above.</div></div>
       <div class="cardbody" style="padding:0;">
         <div class="tablewrap" style="border:none;border-radius:0;max-height:600px;overflow-y:auto;">
           <table>
@@ -2722,6 +2757,15 @@ function wireTabEvents(){
   if(currentTab==="sageimport"){
     document.getElementById("sageDateFilter").addEventListener("change", (e)=>{ sageDateFilter = e.target.value; render(); });
     document.getElementById("toggleFilter").addEventListener("change", (e)=>{ sageOnlyPurchasedOnDate = e.target.checked; render(); });
+    document.getElementById("saveSageBuffers").addEventListener("click", ()=>{
+      document.querySelectorAll("[data-sagebuffer-input]").forEach(inp=>{
+        const cat = inp.dataset.sagebufferInput;
+        const v = inp.value.trim();
+        if(v==="") delete DATA.categoryCostBuffers[cat];
+        else DATA.categoryCostBuffers[cat] = (Number(v)||0)/100;
+      });
+      persist("Wastage buffers saved", ["categoryCostBuffers"]);
+    });
     document.getElementById("downloadSageCsv").addEventListener("click", ()=>{
       const all = sageImportComputed(sageDateFilter);
       const rows = sageOnlyPurchasedOnDate ? all.filter(r=>r.purchasedOnDate) : all;
