@@ -346,6 +346,7 @@ let saveConflict = null;
 let staleDataAvailable = false;
 let lastKnownDataVersion = null; // DATA.dataVersion as of this tab's last successful load/refresh/save; compared against the server's on every poll
 let dataRefreshInFlight = false; // guards against overlapping silent refreshes if a slow one is still in flight when the next poll fires
+let lastActivityAt = Date.now(); // bumped by any click/keypress/scroll/touch — see wireActivityTracking() — checked against IDLE_LOGOUT_MS to auto-logout an unattended, still-logged-in session
 // tentatively restored here (before real data has loaded); boot() re-validates it against the
 // real DATA.users once the fetch completes, since the empty starting shape above can't tell
 // whether this session's user still exists or still has the same role
@@ -1861,7 +1862,12 @@ function renderReceiving(){
   const receivedRows = recentlyReceived.map(p=>{
     const disc = receivingDiscrepancy(p);
     const editing = receivingEditing.has(p.id);
+    // No p.qty at all means this row never went through the order queue — it was logged directly here
+    // as stock that showed up with nothing on file (see the "Log stock with no order on file" card
+    // below), most often because procurement forgot to log the order in the first place.
+    const noOrder = p.qty===undefined || p.qty===null || p.qty==="";
     const discFlag = disc ? chip("⚠ " + [disc.qtyDiff?"qty differs":null, disc.costDiff?"cost differs":null].filter(Boolean).join(", "), "warn") : "";
+    const noOrderFlag = noOrder ? chip("no order on file","neutral") : "";
     const editForm = manage && editing ? `
       <div class="buyrow" data-receive-row="${esc(p.id||"")}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;margin-top:4px;">
         <input type="number" step="0.01" class="receive-qty" placeholder="Qty" value="${esc(p.receivedQty!==undefined?p.receivedQty:"")}" style="width:64px;">
@@ -1873,7 +1879,7 @@ function renderReceiving(){
     <tr>
       <td>${esc(p.baseProduct)}</td>
       <td class="helptext">${esc(p.date||"—")} → received ${esc(p.receivedDate||"—")}</td>
-      <td>${purchaseLineChip(p)} ${discFlag}</td>
+      <td>${purchaseLineChip(p)} ${discFlag} ${noOrderFlag}</td>
       <td>${esc(p.receivedBy||"—")}</td>
       <td>${manage ? `<button class="btn small" data-receive-edit="${esc(p.id||"")}">${editing?"Cancel":"Correct"}</button>${editForm}` : ""}</td>
     </tr>`;
@@ -1888,6 +1894,21 @@ function renderReceiving(){
       <div class="stat"><div class="label">Received (last ${RECEIVING_RECENT_DAYS}d)</div><div class="value small">${recentlyReceived.length}</div></div>
       <div class="stat"><div class="label">Discrepancies (last ${RECEIVING_RECENT_DAYS}d)</div><div class="value" style="color:${discrepancyCount?'var(--warn)':'var(--good)'}">${discrepancyCount}</div></div>
     </div>
+    ${manage ? `
+    <div class="card">
+      <div class="cardhead"><div><h3>Log stock with no order on file</h3><div class="desc">Stock showed up but procurement never logged an order for it? Count it and record it here directly — it's tracked as received immediately, same as anything confirmed above.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Base product</label><input type="text" id="directReceiveBase" list="baseProductsDL"></div>
+          <div class="field"><label>Quantity received</label><input type="number" step="0.01" id="directReceiveQty" placeholder="e.g. 10"></div>
+          <div class="field"><label>Cost per unit</label><input type="number" step="0.01" id="directReceiveCost" placeholder="if known"></div>
+          <div class="field"><label>Supplier</label><input type="text" id="directReceiveSupplier" placeholder="optional"></div>
+          <div><button class="btn primary" id="logDirectReceipt">+ Log received stock</button></div>
+        </div>
+      </div>
+    </div>
+    ${datalistOptions("baseProductsDL", distinctBaseProducts())}
+    ` : ""}
     <div class="card">
       <div class="cardhead"><div><h3>Pending delivery</h3><div class="desc">${pending.length} order(s) awaiting confirmation, oldest first.</div></div></div>
       <div class="cardbody" style="padding:0;">
@@ -2583,8 +2604,9 @@ function renderUsers(){
       <div class="cardhead"><div><h3>What each role can access</h3></div></div>
       <div class="cardbody helptext">
         <strong>Owner</strong> — everything, including Users and Backup &amp; Restore.<br>
-        <strong>Procurement</strong> — Quick Buy, Shopping List, Purchase Costs, Stock Take.<br>
-        <strong>Stock Taker</strong> — Stock Take, and a read-only Shopping List.
+        <strong>Procurement</strong> — Shopping List, Quick Buy, Shopping List Archive, Purchase Costs, Sage CSV, Input Stock Levels, and a read-only view of Receiving (can see what's outstanding, can't confirm a delivery).<br>
+        <strong>Stock Taker</strong> — Input Stock Levels, and a read-only Shopping List.<br>
+        <strong>Receiving</strong> — only the Receiving tab, to log stock as it's counted in. For staff whose only job is receiving deliveries (e.g. a night-shift hand) — they don't need or see anything else.
       </div>
     </div>`;
 }
@@ -2969,6 +2991,31 @@ function wireTabEvents(){
         render();
       });
     });
+    const directReceiptBtn = document.getElementById("logDirectReceipt");
+    if(directReceiptBtn){
+      directReceiptBtn.addEventListener("click", ()=>{
+        const bp = document.getElementById("directReceiveBase").value.trim();
+        const qtyVal = document.getElementById("directReceiveQty").value;
+        const costVal = document.getElementById("directReceiveCost").value;
+        const supplierVal = document.getElementById("directReceiveSupplier").value.trim();
+        if(!bp){ toast("Enter a base product"); return; }
+        if(!qtyVal){ toast("Enter the quantity received"); return; }
+        const today = new Date().toISOString().slice(0,10);
+        // Deliberately no entry.qty/entry.cost — there was never an order logged for this delivery, so
+        // there's nothing to compare the count against. isReceived/purchaseLineChip/receivingDiscrepancy
+        // all already treat a missing qty as "no order figure on file" rather than a discrepancy, and the
+        // Receiving list flags it with a "no order on file" chip so it stays visible that this one
+        // skipped the usual Order -> Received flow.
+        const entry = {id:newId(), date:today, baseProduct:bp, receivedQty:Number(qtyVal), receivedDate:today};
+        if(costVal!==""){ entry.receivedCost = Number(costVal); }
+        if(supplierVal) entry.supplier = supplierVal;
+        if(currentUser){ entry.loggedBy = currentUser.name; entry.receivedBy = currentUser.name; }
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== entry.id);
+        DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+        DATA.purchaseCosts.push(entry);
+        persistPurchaseAction({action:"logPurchase", entry}, "Logged " + qtyVal + " " + bp + " received (no order on file)");
+      });
+    }
   }
 
   if(currentTab==="dashboard"){
@@ -3518,6 +3565,28 @@ function wireSalesDropzone(entityKey){
 
 }
 
+// Auto-logout after 30 minutes of no activity, for every role — a PC left logged in on the shop floor
+// (or anywhere else) shouldn't stay open and usable indefinitely. lastActivityAt is bumped by
+// wireActivityTracking() below on any click/keypress/scroll/touch, anywhere on the page (capture-phase
+// listeners on document, so a click or scroll inside a nested element like a .tablewrap still counts).
+// Checked on the same cadence as the data-staleness poll, plus on visibility/focus — that second path is
+// what actually catches "left it open overnight": a background tab's timers get throttled/paused, so the
+// interval alone can't be trusted to fire close to the 30-minute mark on its own.
+const IDLE_LOGOUT_MS = 30 * 60 * 1000;
+function checkIdleLogout(){
+  if(!currentUser) return;
+  if(Date.now() - lastActivityAt < IDLE_LOGOUT_MS) return;
+  currentUser = null;
+  try{ sessionStorage.removeItem("dailyFruitUser"); }catch(e){}
+  render();
+  toast("Logged out after 30 minutes of inactivity");
+}
+function wireActivityTracking(){
+  ["mousedown","keydown","touchstart","wheel","scroll"].forEach(evt=>{
+    document.addEventListener(evt, ()=>{ lastActivityAt = Date.now(); }, {capture:true, passive:true});
+  });
+}
+
 // Cheap poll: asks the backend for just its current dataVersion (no full readAllData_) and compares
 // against what this tab last loaded/saved. Runs on a timer and whenever the tab regains focus or
 // visibility — the visibility/focus check is what actually matters for "left it open on my PC, came
@@ -3602,9 +3671,10 @@ boot();
 // failed load calls it again), and checkForUpdates() is already a no-op until dataLoaded/currentUser
 // are set, so there's no need to guard against double-registration here.
 const DATA_POLL_INTERVAL_MS = 90000; // 90s — frequent enough to catch a returning user quickly, cheap enough (one tiny GET) not to matter at any real scale
-setInterval(checkForUpdates, DATA_POLL_INTERVAL_MS);
-document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState === "visible") checkForUpdates(); });
-window.addEventListener("focus", checkForUpdates);
+wireActivityTracking();
+setInterval(()=>{ checkIdleLogout(); checkForUpdates(); }, DATA_POLL_INTERVAL_MS);
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState === "visible"){ checkIdleLogout(); checkForUpdates(); } });
+window.addEventListener("focus", ()=>{ checkIdleLogout(); checkForUpdates(); });
 </script>
 </body>
 </html>
