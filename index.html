@@ -270,6 +270,7 @@ function emptyDataShape(){
     users: [{name:"Owner", pin:"1234", role:"owner"}],
     purchaseIssues: [], salesHistory: [],
     categoryBuffers: {}, productCycles: {}, productCeilings: {},
+    categories: [],
   };
 }
 
@@ -300,6 +301,7 @@ function applyDataDefaults(d){
   if(!d.categoryBuffers) d.categoryBuffers = {}; // backward-compatible default: per-category safety buffer % overrides (falls back to the global safety buffer when unset)
   if(!d.productCycles) d.productCycles = {}; // backward-compatible default: per-product replenishment cycle length overrides (falls back to the global cover multiplier when unset)
   if(!d.productCeilings) d.productCeilings = {}; // backward-compatible default: per-product shelf-life hold ceilings (no cap when unset)
+  if(!d.categories) d.categories = []; // backward-compatible default for backups predating explicit category management (name + hidden flag)
   if(!d.users || !d.users.length){
     // backward-compatible default for backups predating login — logs in as name "Owner", PIN 1234.
     // Change this immediately from the Users tab once logged in.
@@ -340,7 +342,10 @@ try{
     if(parsed && parsed.name && parsed.role) currentUser = parsed;
   }
 }catch(e){ /* storage unavailable */ }
-let loginSelectedUser = null;
+// The login list used to be a tap-a-name-tile picker, which gets bulky once the user list is long —
+// replaced with a single name + PIN form. loginNameInput just remembers what was typed so a wrong-PIN
+// re-render doesn't make them retype their name too.
+let loginNameInput = "";
 let loginError = "";
 let currentTab = "dashboard";
 try{
@@ -367,11 +372,12 @@ let stockTakeDate = new Date().toISOString().slice(0,10);
 let stockArchiveDateFilter = "";
 let shoppingCategoryFilter = "";
 let shoppingStatusFilter = "";
-let shoppingBuyEditing = new Set(); // baseProducts currently showing the inline buy-entry inputs instead of the "bought today" badge
+let shoppingBuyEditing = new Map(); // baseProduct -> id of the purchase line being edited, or "new" when adding another line, for whichever rows are currently showing the inline buy-entry inputs
 let quickBuySearch = "";
 let quickBuyCategoryFilter = "";
 let quickBuySelected = null; // baseProduct currently open in the Quick Buy entry screen, or null for the search/pick list
 let quickBuyMode = "buy"; // "buy" (qty + price form) or "unable" (reason form) for the currently selected product
+let quickBuyEditingId = null; // id of the purchase line being corrected, or null when the buy form is adding a fresh line (e.g. a second supplier for today)
 
 const NAV = [
   {group:"Shopping List", items:[
@@ -420,6 +426,10 @@ function canManagePurchases(){
 }
 
 function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
+// A short, good-enough-for-this-app unique id for a purchase line (or any other row that needs one to
+// be individually editable/deletable) — never sent to a server that needs global uniqueness guarantees,
+// just enough to tell "this one row" apart from every other row a browser might create around the same time.
+function newId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 function fmtNum(n, d){ if(n===null||n===undefined||n==="") return ""; d = d===undefined?2:d; return Number(n).toLocaleString(undefined,{minimumFractionDigits:d, maximumFractionDigits:d}); }
 function money(n){ return n===null||n===undefined||n==="" ? "" : "R"+fmtNum(n,2); }
@@ -620,7 +630,6 @@ function latestStockTakeMap(){
   return map;
 }
 
-const SHOPPING_STATUS_ORDER = {"Critical":0, "Buy":1, "No stock take":2, "Missing setup":3, "Overstocked":4, "OK":5};
 
 function shoppingListComputed(){
   // compares each base product's most recent stock take against its Calculated Holdings target
@@ -650,52 +659,73 @@ function shoppingListComputed(){
     }
     return Object.assign({}, row, {currentStock, stockDate, status, toBuy, ratio});
   });
-  // most urgent first (Critical, Buy, then data-quality issues, then Overstocked, then OK), alphabetical within each
+  // Sorted by % of stock ascending — lowest stock (0%) at the top, fullest (100%+) at the bottom — so
+  // the most urgent restocking is always what you see first. A row with no computable % at all (no
+  // stock take yet, or missing setup) can't be placed on that scale, so those sit at the very top,
+  // above 0%, since not even knowing the stock level is at least as urgent as being empty.
   rows.sort((a,b)=>{
-    const oa = SHOPPING_STATUS_ORDER[a.status]!==undefined ? SHOPPING_STATUS_ORDER[a.status] : 9;
-    const ob = SHOPPING_STATUS_ORDER[b.status]!==undefined ? SHOPPING_STATUS_ORDER[b.status] : 9;
-    if(oa !== ob) return oa-ob;
+    const aHas = a.ratio!==null && a.ratio!==undefined;
+    const bHas = b.ratio!==null && b.ratio!==undefined;
+    if(aHas !== bHas) return aHas ? 1 : -1;
+    if(aHas && a.ratio !== b.ratio) return a.ratio - b.ratio;
     return a.baseProduct.localeCompare(b.baseProduct);
   });
   return rows;
 }
 
-function purchaseCostMap(date){
-  // first entry wins per Base Product, mirrors the workbook's MATCH() behaviour.
-  // pass a date (YYYY-MM-DD) to scope to purchases logged on that exact date only;
-  // omit it to fall back to the first-ever logged cost per base product, any date.
-  const map = {};
-  for(const p of DATA.purchaseCosts){
-    if(date && p.date !== date) continue;
-    if(p.baseProduct && !(p.baseProduct in map)) map[p.baseProduct] = Number(p.cost);
+// Buying the same base product from two different suppliers on the same day is normal (that's the
+// whole point of multi-line purchase logging), so "the cost" for a base product on a given day is a
+// quantity-weighted average across every line logged for it that day, not just one line's price.
+// A line with no qty logged can't be weighted, so it falls back to being the map's answer only when
+// nothing else with a qty exists for that base product+date (better than silently dropping it).
+function weightedCostMap_(entries){
+  const sums = {}; // baseProduct -> {costQty, qty, fallbackCost}
+  for(const p of entries){
+    if(!p.baseProduct) continue;
+    const qty = Number(p.qty)||0;
+    const cost = Number(p.cost)||0;
+    if(!sums[p.baseProduct]) sums[p.baseProduct] = {costQty:0, qty:0, fallbackCost:cost};
+    if(qty>0){ sums[p.baseProduct].costQty += qty*cost; sums[p.baseProduct].qty += qty; }
+    else sums[p.baseProduct].fallbackCost = cost; // last qty-less line wins as the fallback, same spirit as the old "latest wins"
   }
+  const map = {};
+  Object.keys(sums).forEach(bp=>{
+    const s = sums[bp];
+    map[bp] = round2(s.qty>0 ? s.costQty/s.qty : s.fallbackCost);
+  });
   return map;
 }
 
-function purchaseEntryForDate(baseProduct, date){
-  // first entry wins per (date, baseProduct), mirrors purchaseCostMap's MATCH() behaviour
-  return DATA.purchaseCosts.find(p=> p.baseProduct===baseProduct && p.date===date) || null;
+function purchaseCostMap(date){
+  // weighted-average cost per base product across every line logged on this exact date;
+  // omit the date to weight across every line ever logged, any date.
+  const entries = date ? DATA.purchaseCosts.filter(p=> p.date===date) : DATA.purchaseCosts;
+  return weightedCostMap_(entries);
+}
+
+// All purchase LINES logged for a base product on a given date (there can be more than one — different
+// suppliers, different prices — since multi-supplier same-day buying was added).
+function purchaseEntriesForDate(baseProduct, date){
+  return DATA.purchaseCosts.filter(p=> p.baseProduct===baseProduct && p.date===date);
 }
 
 function unableEntryForDate(baseProduct, date){
   return DATA.purchaseIssues.find(p=> p.baseProduct===baseProduct && p.date===date) || null;
 }
 
-// Most recently DATED purchase entry per base product (not just first-in-array like purchaseCostMap,
-// which is a legacy MATCH()-style lookup and would actually surface the OLDEST logged cost since new
-// purchases are appended to the end of the list). This is "the best current price we know" for a base
-// product, used to keep a Product Mix's cost current any time an ingredient's price changes — not tied
-// to any single day's Sage export.
+// The always-current cost per base product — a weighted average across every line sharing the MOST
+// RECENT date logged for that base product (previously just grabbed whichever single row was logged
+// last; multiple suppliers on the same day needs a genuine weighted average instead of picking one
+// arbitrarily). Used to keep a Product Mix's cost current any time an ingredient's price changes — not
+// tied to any single day's Sage export.
 function latestPurchaseCostMap(){
-  const latest = {};
+  const latestDate = {}; // baseProduct -> most recent date seen
   for(const p of DATA.purchaseCosts){
     if(!p.baseProduct) continue;
-    const prior = latest[p.baseProduct];
-    if(!prior || (p.date||"") >= (prior.date||"")) latest[p.baseProduct] = {cost:Number(p.cost), date:p.date||""};
+    if(!latestDate[p.baseProduct] || (p.date||"") >= latestDate[p.baseProduct]) latestDate[p.baseProduct] = p.date||"";
   }
-  const out = {};
-  Object.keys(latest).forEach(bp=> out[bp] = latest[bp].cost);
-  return out;
+  const entries = DATA.purchaseCosts.filter(p=> p.baseProduct && (p.date||"")===latestDate[p.baseProduct]);
+  return weightedCostMap_(entries);
 }
 
 // Cost per unit of any Item Setup row, given a base-product cost lookup (either a specific date's
@@ -890,41 +920,28 @@ function renderNav(){
 }
 
 function wireLoginEvents(){
-  if(!loginSelectedUser){
-    document.querySelectorAll("[data-login-pick]").forEach(b=>{
-      b.addEventListener("click", ()=>{
-        loginSelectedUser = b.dataset.loginPick;
-        loginError = "";
-        render();
-      });
-    });
-  } else {
-    const backBtn = document.getElementById("loginBack");
-    if(backBtn) backBtn.addEventListener("click", ()=>{
-      loginSelectedUser = null;
-      loginError = "";
-      render();
-    });
-    const doLogin = ()=>{
-      const pinEl = document.getElementById("loginPin");
-      const pin = pinEl ? pinEl.value : "";
-      const u = (DATA.users||[]).find(x=>x.name===loginSelectedUser);
-      if(u && String(u.pin)===String(pin)){
-        currentUser = {name:u.name, role:u.role};
-        try{ sessionStorage.setItem("dailyFruitUser", JSON.stringify(currentUser)); }catch(e){}
-        loginSelectedUser = null;
-        loginError = "";
-        render();
-      } else {
-        loginError = "Incorrect PIN";
-        render();
-      }
-    };
-    const submitBtn = document.getElementById("loginSubmit");
-    if(submitBtn) submitBtn.addEventListener("click", doLogin);
-    const pinEl = document.getElementById("loginPin");
-    if(pinEl) pinEl.addEventListener("keydown", (e)=>{ if(e.key==="Enter") doLogin(); });
-  }
+  const nameEl = document.getElementById("loginName");
+  if(nameEl) nameEl.addEventListener("input", (e)=>{ loginNameInput = e.target.value; });
+  const doLogin = ()=>{
+    const name = (document.getElementById("loginName")||{}).value || "";
+    const pin = (document.getElementById("loginPin")||{}).value || "";
+    loginNameInput = name;
+    const trimmedName = name.trim();
+    if(!trimmedName){ loginError = "Enter your name"; render(); return; }
+    const u = (DATA.users||[]).find(x=> String(x.name).toLowerCase() === trimmedName.toLowerCase());
+    if(!u){ loginError = "Name not recognized"; render(); return; }
+    if(String(u.pin) !== String(pin)){ loginError = "Incorrect PIN"; render(); return; }
+    currentUser = {name:u.name, role:u.role};
+    try{ sessionStorage.setItem("dailyFruitUser", JSON.stringify(currentUser)); }catch(e){}
+    loginNameInput = "";
+    loginError = "";
+    render();
+  };
+  const submitBtn = document.getElementById("loginSubmit");
+  if(submitBtn) submitBtn.addEventListener("click", doLogin);
+  const pinEl = document.getElementById("loginPin");
+  if(pinEl) pinEl.addEventListener("keydown", (e)=>{ if(e.key==="Enter") doLogin(); });
+  if(nameEl) nameEl.addEventListener("keydown", (e)=>{ if(e.key==="Enter") doLogin(); });
 }
 
 function render(){
@@ -1031,34 +1048,33 @@ function renderSaveConflictBanner(message){
 }
 
 // ---------- Login ----------
+// A tap-a-name-tile picker gets unwieldy once the user list is long, so this is a single name + PIN
+// form instead — plain typing, no autocomplete/suggestions. Wrong name and wrong PIN get their own
+// distinct error messages rather than one generic "incorrect" message.
 function renderLogin(){
   const users = DATA.users || [];
-  if(loginSelectedUser){
+  if(!users.length){
     return `
       <div class="loginwrap">
         <div class="loginbox">
           <div class="loginmark">DF</div>
           <h2>Daily Fruit</h2>
-          <p class="helptext">Enter the PIN for <strong>${esc(loginSelectedUser)}</strong></p>
-          <input type="password" inputmode="numeric" pattern="[0-9]*" id="loginPin" placeholder="PIN" autofocus
-            style="font-size:22px;padding:14px;letter-spacing:6px;margin-top:14px;">
-          ${loginError ? `<div class="helptext" style="color:var(--critical);margin-top:8px;">${esc(loginError)}</div>` : ""}
-          <button class="btn primary" id="loginSubmit" style="width:100%;margin-top:14px;padding:13px;font-size:15px;">Log in</button>
-          <button class="btn ghost" id="loginBack" style="width:100%;margin-top:6px;">← Choose a different name</button>
+          <p class="helptext">No users set up yet — ask the owner to add one.</p>
         </div>
       </div>`;
   }
-  const nameButtons = users.map(u=>`
-    <button class="quickbuyitem" data-login-pick="${esc(u.name)}" style="justify-content:center;">
-      <span class="qb-name">${esc(u.name)}</span>
-    </button>`).join("");
   return `
     <div class="loginwrap">
       <div class="loginbox">
         <div class="loginmark">DF</div>
         <h2>Daily Fruit</h2>
-        <p class="helptext">Who's using the app?</p>
-        <div class="quickbuylist" style="margin-top:16px;text-align:left;">${nameButtons || `<div class="empty">No users set up yet — ask the owner to add one.</div>`}</div>
+        <p class="helptext">Enter your name and PIN to log in.</p>
+        <input type="text" id="loginName" placeholder="Name" autocomplete="off" autofocus
+          value="${esc(loginNameInput)}" style="font-size:16px;padding:13px;margin-top:14px;">
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="loginPin" placeholder="PIN"
+          style="font-size:22px;padding:14px;letter-spacing:6px;margin-top:10px;">
+        ${loginError ? `<div class="helptext" style="color:var(--critical);margin-top:8px;">${esc(loginError)}</div>` : ""}
+        <button class="btn primary" id="loginSubmit" style="width:100%;margin-top:14px;padding:13px;font-size:15px;">Log in</button>
       </div>
     </div>`;
 }
@@ -1086,6 +1102,54 @@ function distinctCategories(){
   DATA.itemSetup.forEach(it=>{ if(!it.baseProduct && it.category) set.add(it.category); });
   set.add("Mixes"); // always offered as a ready-made option for a Product Mix item, even before one's been used
   return Array.from(set).sort();
+}
+
+// Every category that exists, whether it's ever had its own DATA.categories entry or not (a lot of
+// categories are still just whatever text someone typed into an item, with no entry of their own —
+// this merges both worlds into one list so the Manage Categories card can show and edit all of them).
+function allCategoriesWithMeta(){
+  const names = new Set(distinctCategories());
+  (DATA.categories||[]).forEach(c=> c.name && names.add(c.name));
+  return Array.from(names).sort().map(name=>{
+    const rec = (DATA.categories||[]).find(c=>c.name===name);
+    return {name, hidden: !!(rec && rec.hidden)};
+  });
+}
+
+// Categories marked hidden from Shopping List / Quick Buy — used to fully exclude their products from
+// those two screens (both the row list and the category filter dropdown), everywhere else unaffected.
+function hiddenCategorySet(){
+  return new Set((DATA.categories||[]).filter(c=>c.hidden).map(c=>c.name));
+}
+
+// Add / rename / delete / hide a category. Each action saves itself immediately (like Item Setup's
+// delete-item button) rather than waiting for the page's "Save settings" button, since a rename or
+// delete here also touches Item Setup and Base Product categories, not just this card.
+function renderManageCategories(){
+  const cats = allCategoriesWithMeta();
+  const rows = cats.map(c=>{
+    const isBuiltIn = c.name==="Mixes"; // always offered as a ready-made category for Product Mix items — kept out of rename/delete so it can't drift from what the rest of the app expects
+    return `
+    <tr>
+      <td>${isBuiltIn ? esc(c.name) : `<input class="rowinput" data-catname-input="${esc(c.name)}" value="${esc(c.name)}">`}</td>
+      <td style="text-align:center;"><input type="checkbox" data-cathidden-input="${esc(c.name)}" ${c.hidden?"checked":""}></td>
+      <td>${isBuiltIn ? `<span class="helptext">built-in</span>` : `<button class="delbtn" data-catdelete="${esc(c.name)}" title="Delete category">✕</button>`}</td>
+    </tr>`;
+  }).join("");
+  return `
+    <div class="card">
+      <div class="cardhead"><div><h3>Manage categories</h3><div class="desc">Rename or delete a category — renaming updates every item using it, deleting moves its items to Uncategorized. Hide a category to leave it out of Shopping List and Quick Buy entirely; it still shows normally everywhere else.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid" style="margin-bottom:14px;">
+          <div class="field"><label>New category name</label><input type="text" id="newCategoryName" placeholder="e.g. Herbs"></div>
+          <div><button class="btn" id="addCategoryBtn">Add category</button></div>
+        </div>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Category</th><th>Hidden from Shopping List / Quick Buy</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="3" class="empty">No categories yet.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>`;
 }
 function allItemTexts(){
   return DATA.itemSetup.map(it=>it.item).sort();
@@ -1145,47 +1209,59 @@ function parseSalesCsvText(text){
 }
 
 // ---------- Shopping List ----------
+// Renders every purchase LINE logged today for this base product as its own chip (buying the same
+// product from two suppliers on the same day is normal now, not a duplicate) — plus, for roles that
+// can manage purchases, an Edit/Delete per line and an "Add another" control. shoppingBuyEditing maps
+// baseProduct -> the id of the line currently being edited, or the string "new" when adding a fresh one.
 function renderBuyCell(r, today){
   const bp = r.baseProduct;
-  const existing = purchaseEntryForDate(bp, today);
+  const entries = purchaseEntriesForDate(bp, today);
+  const lineLabel = (e)=>{
+    const hasQty = e.qty!==undefined && e.qty!==null && e.qty!=="";
+    return "✓ " + (hasQty ? fmtNum(e.qty)+" @ " : "") + money(e.cost) + (e.supplier ? " (" + esc(e.supplier) + ")" : "");
+  };
 
   if(!canManagePurchases()){
     // read-only role (Stock Taker): show what's been bought, but no way to log or edit it here
-    if(existing){
-      const hasQty = existing.qty!==undefined && existing.qty!==null && existing.qty!=="";
-      const label = "✓ " + (hasQty ? fmtNum(existing.qty)+" @ " : "") + money(existing.cost);
-      return chip(label,"good");
-    }
-    return `<span class="helptext">—</span>`;
+    if(!entries.length) return `<span class="helptext">—</span>`;
+    return entries.map(e=> chip(lineLabel(e),"good")).join(" ");
   }
 
-  const showForm = shoppingBuyEditing.has(bp);
+  const editingVal = shoppingBuyEditing.get(bp); // undefined = no form open; "new" = adding a line; else = id of the line being edited
+  const editingExisting = (editingVal && editingVal!=="new") ? entries.find(e=>e.id===editingVal) : null;
 
-  if(!showForm){
-    if(existing){
-      const hasQty = existing.qty!==undefined && existing.qty!==null && existing.qty!=="";
-      const label = "✓ " + (hasQty ? fmtNum(existing.qty)+" @ " : "") + money(existing.cost);
-      return `<div data-buy-row="${esc(bp)}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;white-space:nowrap;">
-        ${chip(label,"good")}
-        <button class="btn" data-buy-edit="${esc(bp)}" style="padding:2px 8px;font-size:12px;">Edit</button>
-        <button class="delbtn" data-buy-delete="${esc(bp)}" title="Delete this entry">✕</button>
-      </div>`;
-    }
-    return `<div data-buy-row="${esc(bp)}"><button class="btn" data-buy-edit="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ Log buy</button></div>`;
+  const lineChips = entries.map(e=> `
+    <span style="display:inline-flex;align-items:center;gap:4px;">
+      ${chip(lineLabel(e),"good")}
+      <button class="btn" data-buy-edit="${esc(bp)}" data-buy-edit-id="${esc(e.id||"")}" style="padding:1px 6px;font-size:11px;">Edit</button>
+      <button class="delbtn" data-buy-delete-id="${esc(e.id||"")}" data-buy-delete-bp="${esc(bp)}" title="Delete this entry">✕</button>
+    </span>`).join("");
+
+  if(!editingVal){
+    return `<div data-buy-row="${esc(bp)}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      ${lineChips}
+      <button class="btn" data-buy-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ ${entries.length?"Add another":"Log buy"}</button>
+    </div>`;
   }
 
-  const prefillQty = existing && existing.qty!==undefined && existing.qty!==null ? existing.qty : (r.toBuy!==null ? r.toBuy : "");
-  const prefillCost = existing && existing.cost!==undefined && existing.cost!==null ? existing.cost : "";
-  return `<div class="buyrow" data-buy-row="${esc(bp)}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
-    <input type="number" step="0.01" class="buy-qty" placeholder="Qty" value="${esc(prefillQty)}" style="width:56px;">
-    <input type="number" step="0.01" class="buy-cost" placeholder="Price/u" value="${esc(prefillCost)}" style="width:72px;">
-    <button class="btn primary" data-buy-tick="${esc(bp)}" title="Mark bought" style="padding:2px 10px;font-size:12px;">✓</button>
-    <button class="btn" data-buy-cancel="${esc(bp)}" style="padding:2px 6px;font-size:12px;" title="Close without saving">✕</button>
+  const prefillQty = editingExisting && editingExisting.qty!==undefined && editingExisting.qty!==null ? editingExisting.qty : (!editingExisting && r.toBuy!==null ? r.toBuy : "");
+  const prefillCost = editingExisting && editingExisting.cost!==undefined && editingExisting.cost!==null ? editingExisting.cost : "";
+  const prefillSupplier = editingExisting ? (editingExisting.supplier||"") : "";
+  return `<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;">
+    ${lineChips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">${lineChips}</div>` : ""}
+    <div class="buyrow" data-buy-row="${esc(bp)}" data-buy-editid="${esc(editingExisting?editingVal:"")}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
+      <input type="number" step="0.01" class="buy-qty" placeholder="Qty" value="${esc(prefillQty)}" style="width:56px;">
+      <input type="number" step="0.01" class="buy-cost" placeholder="Price/u" value="${esc(prefillCost)}" style="width:72px;">
+      <input type="text" class="buy-supplier" placeholder="Supplier" value="${esc(prefillSupplier)}" style="width:90px;">
+      <button class="btn primary" data-buy-tick="${esc(bp)}" title="Save" style="padding:2px 10px;font-size:12px;">✓</button>
+      <button class="btn" data-buy-cancel="${esc(bp)}" style="padding:2px 6px;font-size:12px;" title="Close without saving">✕</button>
+    </div>
   </div>`;
 }
 
 function renderShoppingList(){
-  const all = shoppingListComputed();
+  const hiddenCats = hiddenCategorySet();
+  const all = shoppingListComputed().filter(r=> !hiddenCats.has(r.category||"Uncategorized"));
   const counts = {"Critical":0, "Buy":0, "OK":0, "Overstocked":0, "No stock take":0, "Missing setup":0};
   all.forEach(r=> counts[r.status] = (counts[r.status]||0) + 1);
 
@@ -1263,7 +1339,8 @@ function stockPctBadge(r){
 // ---------- Quick Buy (phone-friendly market entry) ----------
 function renderQuickBuy(){
   const today = new Date().toISOString().slice(0,10);
-  const all = shoppingListComputed(); // already sorted most-urgent-first
+  const hiddenCats = hiddenCategorySet();
+  const all = shoppingListComputed().filter(r=> !hiddenCats.has(r.category||"Uncategorized")); // already sorted most-urgent-first
   const search = quickBuySearch.trim().toLowerCase();
   const categories = Array.from(new Set(all.map(r=> r.category || "Uncategorized"))).sort();
   const categoryOptions = `<option value="">All categories</option>` +
@@ -1276,10 +1353,15 @@ function renderQuickBuy(){
   let bodyHtml;
   if(quickBuySelected){
     const row = all.find(r=>r.baseProduct===quickBuySelected) || {baseProduct:quickBuySelected, status:null, toBuy:null, procUnit:"", ratio:null, currentStock:null, recommended:null};
-    const existing = purchaseEntryForDate(quickBuySelected, today);
+    const todaysLines = purchaseEntriesForDate(quickBuySelected, today);
     const existingIssue = unableEntryForDate(quickBuySelected, today);
-    const prefillQty = existing && existing.qty!==undefined && existing.qty!==null ? existing.qty : (row.toBuy!==null && row.toBuy!==undefined ? row.toBuy : "");
-    const prefillCost = existing && existing.cost!==undefined && existing.cost!==null ? existing.cost : "";
+    // quickBuyEditingId: null/undefined = adding a new line; else the id of a line already logged
+    // today that's being corrected in place (buying the same product from two suppliers today is
+    // legitimate, so picking this product again defaults to ADDING another line, not editing the first)
+    const editingLine = quickBuyEditingId ? todaysLines.find(e=>e.id===quickBuyEditingId) : null;
+    const prefillQty = editingLine && editingLine.qty!==undefined && editingLine.qty!==null ? editingLine.qty : (!editingLine && row.toBuy!==null && row.toBuy!==undefined ? row.toBuy : "");
+    const prefillCost = editingLine && editingLine.cost!==undefined && editingLine.cost!==null ? editingLine.cost : "";
+    const prefillSupplier = editingLine ? (editingLine.supplier||"") : "";
     const prefillReason = existingIssue ? existingIssue.reason : "";
     const stockLine = row.ratio!==null && row.ratio!==undefined
       ? `${Math.round(row.ratio*100)}% of target (${fmtNum(row.currentStock,0)} on hand / ${fmtNum(row.recommended,0)} target)`
@@ -1291,12 +1373,29 @@ function renderQuickBuy(){
         <button class="btn ${quickBuyMode==='unable'?'primary':''}" data-quickbuy-setmode="unable" style="flex:1;">Unable to purchase</button>
       </div>`;
 
+    const todaysLinesList = todaysLines.length ? `
+      <div style="margin-bottom:16px;">
+        <div class="helptext" style="font-weight:600;margin-bottom:6px;">Already logged today</div>
+        ${todaysLines.map(e=>{
+          const hasQty = e.qty!==undefined && e.qty!==null && e.qty!=="";
+          const label = (hasQty ? fmtNum(e.qty)+" @ " : "") + money(e.cost) + (e.supplier ? " (" + esc(e.supplier) + ")" : "");
+          return `<div class="quickbuylogrow">
+            <span>${label}</span>
+            <span style="display:flex;align-items:center;gap:10px;">
+              <button class="btn small" data-quickbuy-edit-line="${esc(e.id||"")}">Edit</button>
+              <button class="delbtn" data-quickbuy-delete-id="${esc(e.id||"")}" title="Delete this entry">✕</button>
+            </span>
+          </div>`;
+        }).join("")}
+      </div>` : "";
+
     const buyForm = `
       <div class="formgrid">
         <div class="field"><label>Quantity</label><input type="number" inputmode="decimal" step="0.01" id="quickBuyQty" value="${esc(prefillQty)}" style="font-size:20px;padding:13px;"></div>
         <div class="field"><label>Price per unit</label><input type="number" inputmode="decimal" step="0.01" id="quickBuyCost" value="${esc(prefillCost)}" style="font-size:20px;padding:13px;" placeholder="e.g. 85.00"></div>
+        <div class="field"><label>Supplier</label><input type="text" id="quickBuySupplier" value="${esc(prefillSupplier)}" style="font-size:20px;padding:13px;" placeholder="optional"></div>
       </div>
-      <button class="btn primary" id="quickBuyConfirm" style="width:100%;font-size:16px;padding:15px;margin-top:14px;">✓ Confirm purchase</button>`;
+      <button class="btn primary" id="quickBuyConfirm" style="width:100%;font-size:16px;padding:15px;margin-top:14px;">${editingLine ? "✓ Save changes" : "✓ Confirm purchase"}</button>`;
 
     const unableForm = `
       <div class="field">
@@ -1320,6 +1419,7 @@ function renderQuickBuy(){
             </div>
             <button class="btn" id="quickBuyBack">← Back</button>
           </div>
+          ${quickBuyMode==='buy' ? todaysLinesList : ""}
           ${modeToggle}
           ${quickBuyMode==='unable' ? unableForm : buyForm}
         </div>
@@ -1334,11 +1434,12 @@ function renderQuickBuy(){
     const done = candidates.filter(r=> loggedTodaySet.has(r.baseProduct));
 
     const doneBadge = (r)=>{
-      const purchase = purchaseEntryForDate(r.baseProduct, today);
-      if(purchase){
-        const hasQty = purchase.qty!==undefined && purchase.qty!==null && purchase.qty!=="";
-        return chip("✓ " + (hasQty ? fmtNum(purchase.qty)+" @ " : "") + money(purchase.cost), "good");
+      const lines = purchaseEntriesForDate(r.baseProduct, today);
+      if(lines.length===1){
+        const hasQty = lines[0].qty!==undefined && lines[0].qty!==null && lines[0].qty!=="";
+        return chip("✓ " + (hasQty ? fmtNum(lines[0].qty)+" @ " : "") + money(lines[0].cost), "good");
       }
+      if(lines.length>1) return chip("✓ " + lines.length + " buys logged", "good");
       const issue = unableEntryForDate(r.baseProduct, today);
       if(issue) return chip("✕ " + issue.reason, "critical");
       return "";
@@ -1376,21 +1477,23 @@ function renderQuickBuy(){
       </div>`;
   }
 
+  // One row PER PURCHASE LINE (not per base product) — buying the same product from two suppliers
+  // today means two rows here, each independently editable/deletable by its own id.
   const loggedRows = [
     ...todaysEntries.map(p=>({type:"purchase", baseProduct:p.baseProduct, entry:p})),
     ...todaysIssues.map(p=>({type:"issue", baseProduct:p.baseProduct, entry:p})),
-  ].sort((a,b)=> a.baseProduct.localeCompare(b.baseProduct));
+  ].sort((a,b)=> a.baseProduct.localeCompare(b.baseProduct) || (a.entry.supplier||"").localeCompare(b.entry.supplier||""));
 
   const loggedHtml = loggedRows.length ? loggedRows.map(({type,baseProduct,entry})=>{
     if(type==="purchase"){
       const hasQty = entry.qty!==undefined && entry.qty!==null && entry.qty!=="";
       return `
       <div class="quickbuylogrow">
-        <span>${esc(baseProduct)}</span>
+        <span>${esc(baseProduct)}${entry.supplier ? ` <span class="helptext">(${esc(entry.supplier)})</span>` : ""}</span>
         <span style="display:flex;align-items:center;gap:10px;">
           <span class="num">${hasQty ? fmtNum(entry.qty)+" @ " : ""}${money(entry.cost)}</span>
-          <button class="btn small" data-quickbuy-edit="${esc(baseProduct)}">Edit</button>
-          <button class="delbtn" data-quickbuy-delete="${esc(baseProduct)}" title="Delete this entry">✕</button>
+          <button class="btn small" data-quickbuy-edit-purchase="${esc(baseProduct)}" data-quickbuy-edit-id="${esc(entry.id||"")}">Edit</button>
+          <button class="delbtn" data-quickbuy-delete-id="${esc(entry.id||"")}" title="Delete this entry">✕</button>
         </span>
       </div>`;
     }
@@ -1399,8 +1502,8 @@ function renderQuickBuy(){
       <span>${esc(baseProduct)}</span>
       <span style="display:flex;align-items:center;gap:10px;">
         ${chip("Unable: " + entry.reason, "critical")}
-        <button class="btn small" data-quickbuy-edit="${esc(baseProduct)}">Edit</button>
-        <button class="delbtn" data-quickbuy-delete="${esc(baseProduct)}" title="Delete this entry">✕</button>
+        <button class="btn small" data-quickbuy-edit-issue="${esc(baseProduct)}">Edit</button>
+        <button class="delbtn" data-quickbuy-delete-issue="${esc(baseProduct)}" title="Delete this entry">✕</button>
       </span>
     </div>`;
   }).join("") : `<div class="empty">Nothing logged yet today.</div>`;
@@ -1488,6 +1591,7 @@ function renderDashboard(){
         </div>
       </div>
     </div>
+    ${renderManageCategories()}
     <div class="card">
       <div class="cardhead"><div><h3>Category safety buffers</h3><div class="desc">How much cushion to hold on top of average demand for each category. Leave blank to use the default above.</div></div></div>
       <div class="cardbody">
@@ -1762,13 +1866,13 @@ function renderSalesData(){
 // ---------- Purchase Costs ----------
 function renderPurchase(){
   const bpSet = distinctBaseProducts();
-  const seen = {};
+  // Buying the same base product from two suppliers on the same day is normal now (not a duplicate to
+  // flag) — so this list no longer marks repeats within a date, it just shows every line as-is,
+  // including which supplier it came from.
   const entries = DATA.purchaseCosts.map((p,i)=>{
     const found = bpSet.includes(p.baseProduct);
-    const dup = !!seen[p.baseProduct];
-    seen[p.baseProduct] = true;
     const count = DATA.itemSetup.filter(it=>it.baseProduct===p.baseProduct).length;
-    return {p, i, found, dup, count, dateKey: p.date || "(no date)"};
+    return {p, i, found, count, dateKey: p.date || "(no date)"};
   });
 
   const distinctDates = Array.from(new Set(entries.map(e=>e.dateKey))).sort().reverse();
@@ -1778,7 +1882,7 @@ function renderPurchase(){
   const groupDates = purchaseDateFilter ? distinctDates.filter(d=>d===purchaseDateFilter) : distinctDates;
   const groupsHtml = groupDates.map(dateKey=>{
     const group = entries.filter(e=>e.dateKey===dateKey);
-    const groupRows = group.map(({p,i,found,dup,count})=>{
+    const groupRows = group.map(({p,i,found,count})=>{
       const hasQty = p.qty!==undefined && p.qty!==null && p.qty!=="";
       const total = hasQty ? Number(p.qty)*Number(p.cost) : null;
       return `
@@ -1787,8 +1891,8 @@ function renderPurchase(){
         <td class="num">${hasQty ? fmtNum(p.qty) : "—"}</td>
         <td class="num">${money(p.cost)}</td>
         <td class="num">${total!==null ? money(total) : "—"}</td>
+        <td>${esc(p.supplier||"—")}</td>
         <td>${found?statusChip("OK"):statusChip("NOT FOUND")}</td>
-        <td>${dup?statusChip("DUPLICATE — first row used"):statusChip("OK")}</td>
         <td class="num">${count}</td>
         <td class="helptext">${esc(p.loggedBy||"—")}</td>
         <td><button class="delbtn" data-del-purchase="${i}" title="Remove row">✕</button></td>
@@ -1799,7 +1903,7 @@ function renderPurchase(){
         <table>
           <thead>
             <tr><th colspan="9" style="font-size:13px;text-transform:none;letter-spacing:0;color:var(--ink);">${esc(dateKey)} — ${group.length} ${group.length===1?"entry":"entries"}</th></tr>
-            <tr><th>Base product</th><th class="num">Qty</th><th class="num">Cost / unit</th><th class="num">Total</th><th>Found?</th><th>Duplicate?</th><th class="num">Item codes affected</th><th>Logged by</th><th></th></tr>
+            <tr><th>Base product</th><th class="num">Qty</th><th class="num">Cost / unit</th><th class="num">Total</th><th>Supplier</th><th>Found?</th><th class="num">Item codes affected</th><th>Logged by</th><th></th></tr>
           </thead>
           <tbody>${groupRows}</tbody>
         </table>
@@ -1815,13 +1919,14 @@ function renderPurchase(){
       <td class="num">${hasQty ? fmtNum(l.qty) : "—"}</td>
       <td class="num">${money(l.cost)}</td>
       <td class="num">${total!==null ? money(total) : "—"}</td>
+      <td>${esc(l.supplier||"—")}</td>
       <td><button class="delbtn" data-del-draft="${i}" title="Remove line">✕</button></td>
     </tr>`;
   }).join("");
 
   return `
     <div class="pagehead">
-      <div><h2>Purchase Costs</h2><p>Pick the date you bought stock, add a line for every product you purchased that day, then submit them all together.</p></div>
+      <div><h2>Purchase Costs</h2><p>Pick the date you bought stock, add a line for every product you purchased that day, then submit them all together. Buying the same product from more than one supplier on the same day is fine — add a separate line for each.</p></div>
     </div>
     ${datalistOptions("baseProductsDL", distinctBaseProducts())}
     <div class="card">
@@ -1836,11 +1941,12 @@ function renderPurchase(){
           <div class="field"><label>Base product</label><input type="text" id="draftLineBase" list="baseProductsDL"></div>
           <div class="field"><label>Quantity</label><input type="number" step="0.01" id="draftLineQty" placeholder="e.g. 10"></div>
           <div class="field"><label>Cost per procurement unit</label><input type="number" step="0.01" id="draftLineCost" placeholder="e.g. 85.00"></div>
+          <div class="field"><label>Supplier</label><input type="text" id="draftLineSupplier" placeholder="optional"></div>
           <div><button class="btn" id="addDraftLine">Add line</button></div>
         </div>
         ${purchaseDraftLines.length ? `
         <div class="tablewrap" style="margin-top:14px;"><table>
-          <thead><tr><th>Base product</th><th class="num">Qty</th><th class="num">Cost / unit</th><th class="num">Total</th><th></th></tr></thead>
+          <thead><tr><th>Base product</th><th class="num">Qty</th><th class="num">Cost / unit</th><th class="num">Total</th><th>Supplier</th><th></th></tr></thead>
           <tbody>${draftRows}</tbody>
         </table></div>
         <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
@@ -1851,7 +1957,7 @@ function renderPurchase(){
     </div>
     <div class="card">
       <div class="cardhead">
-        <div><h3>Current entries</h3><div class="desc">Keep this to your latest purchases — remove old ones rather than leaving duplicates.</div></div>
+        <div><h3>Current entries</h3><div class="desc">Multiple lines for the same product on the same day (different suppliers) are expected — remove a line only if it was a mistake.</div></div>
         <div class="field" style="min-width:170px;">
           <label>Filter by date</label>
           <select id="purchDateFilter">${dateFilterOptions}</select>
@@ -2118,24 +2224,35 @@ function wireTabEvents(){
       btn.addEventListener("click", ()=>{
         const container = btn.closest("[data-buy-row]");
         const bp = container.dataset.buyRow;
+        const editId = container.dataset.buyEditid || "";
         const qtyVal = container.querySelector(".buy-qty").value;
         const costVal = container.querySelector(".buy-cost").value;
+        const supplierVal = (container.querySelector(".buy-supplier")||{}).value || "";
         if(!costVal){ toast("Enter a price to mark this bought"); return; }
         const today = new Date().toISOString().slice(0,10);
-        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
-        const entry = {date:today, baseProduct:bp, cost:Number(costVal)};
+        const id = editId || newId();
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== id);
+        const entry = {id, date:today, baseProduct:bp, cost:Number(costVal)};
         if(qtyVal!==""){ entry.qty = Number(qtyVal); }
+        if(supplierVal.trim()) entry.supplier = supplierVal.trim();
         if(currentUser) entry.loggedBy = currentUser.name;
         DATA.purchaseCosts.push(entry);
         shoppingBuyEditing.delete(bp);
-        // additive on the backend (touches only this one row) so this can never collide with someone
-        // else logging a different purchase — e.g. from Quick Buy — around the same moment
+        // additive on the backend (touches only this one row, matched by its own id) so this can never
+        // collide with someone else logging a different purchase — e.g. from Quick Buy — around the
+        // same moment, and buying the same product from two suppliers today is just two separate rows
         persistPurchaseAction({action:"logPurchase", entry}, "Marked " + bp + " as bought");
+      });
+    });
+    document.querySelectorAll("[data-buy-addnew]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        shoppingBuyEditing.set(btn.dataset.buyAddnew, "new");
+        render();
       });
     });
     document.querySelectorAll("[data-buy-edit]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
-        shoppingBuyEditing.add(btn.dataset.buyEdit);
+        shoppingBuyEditing.set(btn.dataset.buyEdit, btn.dataset.buyEditId || "new");
         render();
       });
     });
@@ -2145,13 +2262,13 @@ function wireTabEvents(){
         render();
       });
     });
-    document.querySelectorAll("[data-buy-delete]").forEach(btn=>{
+    document.querySelectorAll("[data-buy-delete-id]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
-        const bp = btn.dataset.buyDelete;
-        const today = new Date().toISOString().slice(0,10);
-        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+        const id = btn.dataset.buyDeleteId;
+        const bp = btn.dataset.buyDeleteBp;
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== id);
         shoppingBuyEditing.delete(bp);
-        persistPurchaseAction({action:"deletePurchaseLog", date:today, baseProduct:bp}, "Deleted today's logged purchase for " + bp);
+        persistPurchaseAction({action:"deletePurchaseLog", id}, "Deleted logged purchase for " + bp);
       });
     });
   }
@@ -2176,8 +2293,11 @@ function wireTabEvents(){
         b.addEventListener("click", ()=>{
           const bp = b.dataset.quickbuyPick;
           const today = new Date().toISOString().slice(0,10);
-          // default to whichever form matches what's already logged for today, else the purchase form
-          quickBuyMode = (unableEntryForDate(bp, today) && !purchaseEntryForDate(bp, today)) ? "unable" : "buy";
+          // default to whichever form matches what's already logged for today, else the purchase form;
+          // picking a product fresh always starts a NEW line (buying it again today, e.g. from a second
+          // supplier, is normal) rather than editing whatever's already logged
+          quickBuyMode = (unableEntryForDate(bp, today) && !purchaseEntriesForDate(bp, today).length) ? "unable" : "buy";
+          quickBuyEditingId = null;
           quickBuySelected = bp;
           render();
         });
@@ -2185,11 +2305,13 @@ function wireTabEvents(){
     } else {
       document.getElementById("quickBuyBack").addEventListener("click", ()=>{
         quickBuySelected = null;
+        quickBuyEditingId = null;
         render();
       });
       document.querySelectorAll("[data-quickbuy-setmode]").forEach(b=>{
         b.addEventListener("click", ()=>{
           quickBuyMode = b.dataset.quickbuySetmode;
+          quickBuyEditingId = null;
           render();
         });
       });
@@ -2198,20 +2320,25 @@ function wireTabEvents(){
         confirmBtn.addEventListener("click", ()=>{
           const qtyVal = document.getElementById("quickBuyQty").value;
           const costVal = document.getElementById("quickBuyCost").value;
+          const supplierVal = (document.getElementById("quickBuySupplier")||{}).value || "";
           if(!costVal){ toast("Enter a price to confirm"); return; }
           const today = new Date().toISOString().slice(0,10);
           const bp = quickBuySelected;
-          DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+          const id = quickBuyEditingId || newId();
+          DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== id);
           DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
-          const entry = {date:today, baseProduct:bp, cost:Number(costVal)};
+          const entry = {id, date:today, baseProduct:bp, cost:Number(costVal)};
           if(qtyVal!==""){ entry.qty = Number(qtyVal); }
+          if(supplierVal.trim()) entry.supplier = supplierVal.trim();
           if(currentUser) entry.loggedBy = currentUser.name;
           DATA.purchaseCosts.push(entry);
           quickBuySelected = null;
+          quickBuyEditingId = null;
           quickBuySearch = "";
           // additive on the backend — this is the fix for two buyers logging purchases from the market
-          // at the same time: it only ever touches this one product+date row, so it can never collide
-          // with, wait on, or overwrite whatever the other person is logging right now
+          // at the same time: it only ever touches this one row (matched by its own id), so it can
+          // never collide with, wait on, or overwrite whatever the other person is logging right now,
+          // and buying the same product from two suppliers today is just two separate rows
           persistPurchaseAction({action:"logPurchase", entry}, "Logged " + bp);
         });
       }
@@ -2223,32 +2350,55 @@ function wireTabEvents(){
           const today = new Date().toISOString().slice(0,10);
           const bp = quickBuySelected;
           DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+          // can't be "unable to purchase" something you already bought (from any supplier) today
           DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
           const entry = {date:today, baseProduct:bp, reason};
           if(currentUser) entry.loggedBy = currentUser.name;
           DATA.purchaseIssues.push(entry);
           quickBuySelected = null;
+          quickBuyEditingId = null;
           quickBuySearch = "";
           persistPurchaseAction({action:"logPurchaseIssue", entry}, "Logged " + bp + " as unable to purchase");
         });
       }
+      document.querySelectorAll("[data-quickbuy-edit-line]").forEach(b=>{
+        b.addEventListener("click", ()=>{
+          quickBuyEditingId = b.dataset.quickbuyEditLine;
+          quickBuyMode = "buy";
+          render();
+        });
+      });
     }
-    document.querySelectorAll("[data-quickbuy-edit]").forEach(b=>{
+    document.querySelectorAll("[data-quickbuy-edit-purchase]").forEach(b=>{
       b.addEventListener("click", ()=>{
-        const bp = b.dataset.quickbuyEdit;
-        const today = new Date().toISOString().slice(0,10);
-        quickBuyMode = (unableEntryForDate(bp, today) && !purchaseEntryForDate(bp, today)) ? "unable" : "buy";
-        quickBuySelected = bp;
+        quickBuySelected = b.dataset.quickbuyEditPurchase;
+        quickBuyEditingId = b.dataset.quickbuyEditId || null;
+        quickBuyMode = "buy";
         render();
       });
     });
-    document.querySelectorAll("[data-quickbuy-delete]").forEach(b=>{
+    document.querySelectorAll("[data-quickbuy-edit-issue]").forEach(b=>{
       b.addEventListener("click", ()=>{
-        const bp = b.dataset.quickbuyDelete;
+        quickBuySelected = b.dataset.quickbuyEditIssue;
+        quickBuyEditingId = null;
+        quickBuyMode = "unable";
+        render();
+      });
+    });
+    document.querySelectorAll("[data-quickbuy-delete-id]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const id = b.dataset.quickbuyDeleteId;
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id !== id);
+        if(quickBuyEditingId === id) quickBuyEditingId = null;
+        persistPurchaseAction({action:"deletePurchaseLog", id}, "Deleted logged purchase");
+      });
+    });
+    document.querySelectorAll("[data-quickbuy-delete-issue]").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const bp = b.dataset.quickbuyDeleteIssue;
         const today = new Date().toISOString().slice(0,10);
-        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
         DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
-        persistPurchaseAction({action:"deletePurchaseLog", date:today, baseProduct:bp}, "Deleted today's log entry for " + bp);
+        persistPurchaseAction({action:"deletePurchaseIssue", date:today, baseProduct:bp}, "Deleted unable-to-purchase entry for " + bp);
       });
     });
   }
@@ -2284,6 +2434,66 @@ function wireTabEvents(){
         else DATA.productCeilings[bp] = Number(v)||0;
       });
       persist("Settings saved", ["procurementPlan","shoppingList","categoryBuffers","productCycles","productCeilings"]);
+    });
+    // Manage categories: each action here saves itself immediately (like Item Setup's delete-item
+    // button) rather than waiting for "Save settings" above, since a rename or delete also touches
+    // Item Setup and Base Product categories, not just this card.
+    document.getElementById("addCategoryBtn").addEventListener("click", ()=>{
+      const nameInput = document.getElementById("newCategoryName");
+      const name = nameInput.value.trim();
+      if(!name){ toast("Enter a category name"); return; }
+      if(allCategoriesWithMeta().some(c=> c.name.toLowerCase()===name.toLowerCase())){ toast("That category already exists"); return; }
+      if(!DATA.categories) DATA.categories = [];
+      DATA.categories.push({name, hidden:false});
+      persist("Added category " + name, ["categories"]);
+    });
+    document.querySelectorAll("[data-cathidden-input]").forEach(inp=>{
+      inp.addEventListener("change", ()=>{
+        const name = inp.dataset.cathiddenInput;
+        if(!DATA.categories) DATA.categories = [];
+        let rec = DATA.categories.find(c=>c.name===name);
+        if(!rec){ rec = {name, hidden:false}; DATA.categories.push(rec); }
+        rec.hidden = inp.checked;
+        persist((inp.checked ? "Hid " + name + " from" : "Unhid " + name + " back into") + " Shopping List / Quick Buy", ["categories"]);
+      });
+    });
+    document.querySelectorAll("[data-catname-input]").forEach(inp=>{
+      inp.addEventListener("change", ()=>{
+        const oldName = inp.dataset.catnameInput;
+        const newName = inp.value.trim();
+        if(!newName || newName===oldName){ inp.value = oldName; return; }
+        if(allCategoriesWithMeta().some(c=> c.name!==oldName && c.name.toLowerCase()===newName.toLowerCase())){
+          toast("Another category is already named that");
+          inp.value = oldName;
+          return;
+        }
+        if(!DATA.categories) DATA.categories = [];
+        const rec = DATA.categories.find(c=>c.name===oldName);
+        if(rec) rec.name = newName;
+        else DATA.categories.push({name:newName, hidden:false});
+        DATA.itemSetup.forEach(it=>{ if(!it.baseProduct && it.category===oldName) it.category = newName; });
+        Object.keys(DATA.baseProductCategories).forEach(bp=>{
+          if(DATA.baseProductCategories[bp]===oldName) DATA.baseProductCategories[bp] = newName;
+        });
+        if(DATA.categoryBuffers[oldName]!==undefined){
+          DATA.categoryBuffers[newName] = DATA.categoryBuffers[oldName];
+          delete DATA.categoryBuffers[oldName];
+        }
+        persist("Renamed " + oldName + " to " + newName, ["categories","itemSetup","baseProductCategories","categoryBuffers"]);
+      });
+    });
+    document.querySelectorAll("[data-catdelete]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const name = btn.dataset.catdelete;
+        if(!confirm(`Delete category "${name}"?\n\nEvery item currently in this category moves to Uncategorized. This saves immediately — it won't wait for Save settings.`)) return;
+        DATA.categories = (DATA.categories||[]).filter(c=>c.name!==name);
+        DATA.itemSetup.forEach(it=>{ if(!it.baseProduct && it.category===name) it.category = ""; });
+        Object.keys(DATA.baseProductCategories).forEach(bp=>{
+          if(DATA.baseProductCategories[bp]===name) delete DATA.baseProductCategories[bp];
+        });
+        delete DATA.categoryBuffers[name];
+        persist("Deleted category " + name, ["categories","itemSetup","baseProductCategories","categoryBuffers"]);
+      });
     });
     document.getElementById("dashboardCategoryFilter").addEventListener("change", (e)=>{
       dashboardCategoryFilter = e.target.value;
@@ -2460,9 +2670,11 @@ function wireTabEvents(){
       const bp = document.getElementById("draftLineBase").value.trim();
       const qty = document.getElementById("draftLineQty").value;
       const cost = document.getElementById("draftLineCost").value;
+      const supplier = document.getElementById("draftLineSupplier").value.trim();
       if(!bp || !cost){ toast("Base product and cost are both required"); return; }
       const line = {baseProduct:bp, cost:Number(cost)};
       if(qty!==""){ line.qty = Number(qty); }
+      if(supplier){ line.supplier = supplier; }
       purchaseDraftLines.push(line);
       render();
     });
@@ -2488,8 +2700,9 @@ function wireTabEvents(){
         const count = purchaseDraftLines.length;
         const dateSaved = purchaseDraftDate;
         purchaseDraftLines.forEach(l=>{
-          const entry = {date:dateSaved, baseProduct:l.baseProduct, cost:l.cost};
+          const entry = {id:newId(), date:dateSaved, baseProduct:l.baseProduct, cost:l.cost};
           if(l.qty!==undefined) entry.qty = l.qty;
+          if(l.supplier) entry.supplier = l.supplier;
           if(currentUser) entry.loggedBy = currentUser.name;
           DATA.purchaseCosts.push(entry);
         });
