@@ -269,7 +269,7 @@ function emptyDataShape(){
     salesA: [], salesB: [], itemSetup: [], recipes: [],
     procurementPlan: {coverMultiplier:1, safetyBuffer:0, historyWindow:30},
     purchaseCosts: [], baseProductCategories: {},
-    stockTakes: [], shoppingList: {criticalPct:0.25, overstockPct:1.5},
+    stockTakes: [], shoppingList: {criticalPct:0.25, overstockPct:1.5, priceAlertPct:0.25},
     users: [{name:"Owner", pin:"1234", role:"owner"}],
     purchaseIssues: [], salesHistory: [],
     categoryBuffers: {}, productCycles: {}, productCeilings: {},
@@ -282,6 +282,7 @@ function applyDataDefaults(d){
   // missing, so restoring/loading data from before a given feature existed never crashes
   if(!d.stockTakes) d.stockTakes = []; // backward-compatible default for backups predating Stock Take history
   if(!d.shoppingList) d.shoppingList = {criticalPct:0.25, overstockPct:1.5}; // backward-compatible default for backups predating the Shopping List
+  if(d.shoppingList.priceAlertPct===undefined || d.shoppingList.priceAlertPct===null) d.shoppingList.priceAlertPct = 0.25; // backward-compatible default for backups/sheets predating Price History
   if(d.stockLevels){
     // migrate the earlier undated "current levels only" shape into a dated archive entry, then drop it
     const migrationDate = new Date().toISOString().slice(0,10);
@@ -383,6 +384,7 @@ let sageOnlyPurchasedOnDate = true;
 let purchaseDraftDate = "";
 let purchaseDraftLines = [];
 let purchaseDateFilter = "";
+let priceHistorySelectedProduct = null; // which base product's chart is showing on the Price History page
 let stockCategoryFilter = "";
 let stockTakeDate = new Date().toISOString().slice(0,10);
 let stockArchiveDateFilter = "";
@@ -428,6 +430,7 @@ const NAV = [
   ]},
   {group:"Costings", items:[
     {id:"purchase", label:"Purchase Costs"},
+    {id:"pricehistory", label:"Price History"},
     {id:"sageimport", label:"Sage CSV"},
   ]},
   {group:"Stock Take", items:[
@@ -452,8 +455,8 @@ if(!TABS.some(t=>t.id===currentTab)){
 // "home" (the landing Dashboard) is Owner + Procurement only, by Shane's explicit request — Stock Taker
 // and Receiving stay scoped to their single-purpose tab, same as before.
 const ROLE_TABS = {
-  owner: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","dashboard","salesdata","itemsetup","recipes","purchase","sageimport","stocktake","users","backup"],
-  procurement: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","purchase","sageimport","stocktake"],
+  owner: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","dashboard","salesdata","itemsetup","recipes","purchase","pricehistory","sageimport","stocktake","users","backup"],
+  procurement: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","purchase","pricehistory","sageimport","stocktake"],
   stocktaker: ["shoppinglist","stocktake"],
   receiving: ["receiving"],
 };
@@ -831,6 +834,59 @@ function latestPurchaseCostMap(){
   return weightedCostMap_(entries);
 }
 
+// ---------- Price History / price-movement alerts ----------
+// One point per day this product was actually received (weighted-average cost across every received
+// line that day, same math as weightedCostMap_ — a line with no cost logged yet can't be plotted, so it's
+// skipped rather than shown as a false $0). Points are sorted oldest-first, and each one (after the
+// first) carries changePct — the % move from the PREVIOUS received price, up or down — and alert, set to
+// "up"/"down" once |changePct| clears DATA.shoppingList.priceAlertPct, or null otherwise. This is
+// purchase-over-purchase, not calendar-day-over-day: two deliveries a week apart compare directly, with
+// nothing in between counted as a "move".
+function priceHistoryForProduct(baseProduct){
+  const byDate = {}; // receivedDate -> {costQty, qty, fallbackCost}
+  DATA.purchaseCosts.forEach(p=>{
+    if(p.baseProduct!==baseProduct || !isReceived(p)) return;
+    const d = p.receivedDate;
+    const cost = Number(p.receivedCost);
+    if(!d || p.receivedCost===undefined || p.receivedCost===null || p.receivedCost==="" || isNaN(cost)) return; // nothing to plot without a cost
+    const qty = Number(p.receivedQty)||0;
+    if(!byDate[d]) byDate[d] = {costQty:0, qty:0, fallbackCost:cost};
+    if(qty>0){ byDate[d].costQty += qty*cost; byDate[d].qty += qty; }
+    else byDate[d].fallbackCost = cost;
+  });
+  const alertPct = Number(DATA.shoppingList.priceAlertPct)||0.25;
+  const points = Object.keys(byDate).sort().map(d=>{
+    const s = byDate[d];
+    return {date:d, cost: round2(s.qty>0 ? s.costQty/s.qty : s.fallbackCost)};
+  });
+  points.forEach((pt,i)=>{
+    if(i===0){ pt.changePct = null; pt.alert = null; return; }
+    const prev = points[i-1].cost;
+    pt.changePct = prev>0 ? (pt.cost-prev)/prev : null;
+    pt.alert = (pt.changePct!==null && Math.abs(pt.changePct)>=alertPct) ? (pt.changePct>0?"up":"down") : null;
+  });
+  return points;
+}
+
+// Every base product with at least one price movement flagged within the last `days`, most extreme
+// move first — the "what actually needs a look" list, for both the Price History page and the Dashboard.
+// Only the LATEST point on a product's history can trigger an alert here (an old spike that's since
+// settled back down isn't a current concern), and only if that latest point itself falls in the window.
+function recentPriceAlerts(days){
+  const cutoff = new Date(Date.now() - days*86400000).toISOString().slice(0,10);
+  const names = Array.from(new Set(DATA.purchaseCosts.filter(p=>p.baseProduct && isReceived(p)).map(p=>p.baseProduct)));
+  const alerts = [];
+  names.forEach(bp=>{
+    const hist = priceHistoryForProduct(bp);
+    const last = hist[hist.length-1];
+    if(last && last.alert && last.date>=cutoff){
+      alerts.push({baseProduct:bp, date:last.date, cost:last.cost, prevCost:hist[hist.length-2].cost, changePct:last.changePct, direction:last.alert});
+    }
+  });
+  alerts.sort((a,b)=> Math.abs(b.changePct) - Math.abs(a.changePct));
+  return alerts;
+}
+
 // Cost per unit of any Item Setup row, given a base-product cost lookup (either a specific date's
 // purchaseCostMap(), or the always-current latestPurchaseCostMap()). Directly-purchased items divide
 // their base product's cost by the conversion factor, same as before. A Product Mix (composite) item
@@ -1146,6 +1202,7 @@ function render(){
     else if(currentTab==="recipes") pageHtml = renderRecipes();
     else if(currentTab==="salesdata") pageHtml = renderSalesData();
     else if(currentTab==="purchase") pageHtml = renderPurchase();
+    else if(currentTab==="pricehistory") pageHtml = renderPriceHistory();
     else if(currentTab==="sageimport") pageHtml = renderSageImport();
     else if(currentTab==="stocktake") pageHtml = renderStockTake();
     else if(currentTab==="users") pageHtml = renderUsers();
@@ -1996,6 +2053,9 @@ function renderHomeDashboard(){
     DATA.purchaseCosts.filter(p=> p.baseProduct && !knownProducts.includes(p.baseProduct)).map(p=>p.baseProduct)
   )).sort();
 
+  // ---- Price History: products with a big purchase-to-purchase move recently ----
+  const priceAlerts = recentPriceAlerts(RECEIVING_RECENT_DAYS);
+
   const goto = (tabId, label)=> `<button class="btn small" data-goto-tab="${esc(tabId)}">${esc(label)}</button>`;
 
   const needsActionHtml = needsActionRows.slice(0,15).map(r=>`
@@ -2042,6 +2102,14 @@ function renderHomeDashboard(){
     return `<tr><td>${esc(bp)}</td><td class="num">${count} line${count===1?"":"s"} logged</td></tr>`;
   }).join("");
 
+  const priceAlertHtml = priceAlerts.slice(0,10).map(a=>`
+    <tr>
+      <td>${esc(a.baseProduct)}</td>
+      <td class="helptext">${esc(a.date)}</td>
+      <td class="num">${money(a.prevCost)} → ${money(a.cost)}</td>
+      <td>${chip((a.direction==="up"?"▲ +":"▼ ")+Math.round(a.changePct*100)+"%", a.direction==="up"?"critical":"good")}</td>
+    </tr>`).join("");
+
   return `
     <div class="pagehead">
       <div><h2>Dashboard</h2><p>Everything that needs a look right now, pulled from Shopping List, Receiving, Calculated Holdings and Purchase Costs — open any section below for the full picture.</p></div>
@@ -2054,6 +2122,7 @@ function renderHomeDashboard(){
     </div>
     <div class="cardrow">
       ${navStat("Receiving discrepancies ("+RECEIVING_RECENT_DAYS+"d)", discrepancyRows.length, discrepancyRows.length?'var(--warn)':'var(--good)', "receiving")}
+      ${navStat("Price alerts ("+RECEIVING_RECENT_DAYS+"d)", priceAlerts.length, priceAlerts.length?'var(--warn)':'var(--good)', "pricehistory")}
       ${canSeeHoldings
         ? navStat("Flagged in Calculated Holdings", flaggedRows.length, flaggedRows.length?'var(--warn)':'var(--good)', "dashboard")
         : plainStat("Flagged in Calculated Holdings (Owner only)", flaggedRows.length, flaggedRows.length?'var(--warn)':'var(--good)')}
@@ -2089,6 +2158,18 @@ function renderHomeDashboard(){
           <tbody>${discrepancyHtml}</tbody>
         </table></div>
       </div>` : ""}
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Price alerts</h3><div class="desc">${priceAlerts.length} product${priceAlerts.length===1?"":"s"} moved ${Math.round((Number(DATA.shoppingList.priceAlertPct)||0.25)*100)}% or more in the last ${RECEIVING_RECENT_DAYS} days.</div></div>
+        ${goto("pricehistory","Open Price History →")}
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th>Date</th><th>Was → Now</th><th>Move</th></tr></thead>
+          <tbody>${priceAlertHtml || `<tr><td colspan="4" class="empty">No big price moves in the last ${RECEIVING_RECENT_DAYS} days.</td></tr>`}</tbody>
+        </table></div>
+      </div>
     </div>
     <div class="card">
       <div class="cardhead">
@@ -2570,6 +2651,141 @@ function renderPurchase(){
       <div class="cardbody" style="padding:0;">
         ${groupsHtml || `<div class="empty">No purchases logged yet.</div>`}
       </div>
+    </div>`;
+}
+
+// ---------- Price History ----------
+// A neutral-ink line (not the app's --accent, since --accent and --good happen to be the same green —
+// using --accent for the ordinary line would make a "big drop" alert dot blend right into it) with
+// alert points picked out in --critical (price went up) / --good (price went down), each carrying an
+// arrow + % label so the signal is never color-alone. SVG <title> elements give every point a native
+// hover tooltip; the full table underneath the chart carries the same numbers with nothing hidden
+// behind hover, per the same "reachable without hovering" rule the rest of the app already follows.
+function renderPriceChart(baseProduct, points){
+  if(points.length < 2){
+    return `<div class="empty" style="padding:32px 16px;">Only one received purchase on file for this product so far — need at least two to chart a trend.</div>`;
+  }
+  const W = 920, H = 260, padL = 54, padR = 20, padT = 18, padB = 36;
+  const plotW = W-padL-padR, plotH = H-padT-padB;
+  const costs = points.map(p=>p.cost);
+  let lo = Math.min(...costs), hi = Math.max(...costs);
+  if(lo===hi){ lo = lo*0.9; hi = (hi*1.1)||1; }
+  const span = hi-lo, pad = span*0.12;
+  lo -= pad; hi += pad;
+  const xAt = i => padL + (points.length===1 ? plotW/2 : (i/(points.length-1))*plotW);
+  const yAt = v => padT + plotH - ((v-lo)/(hi-lo))*plotH;
+
+  const linePath = points.map((p,i)=> (i===0?"M":"L") + xAt(i).toFixed(1) + "," + yAt(p.cost).toFixed(1)).join(" ");
+  const areaPath = linePath + ` L${xAt(points.length-1).toFixed(1)},${(padT+plotH).toFixed(1)} L${xAt(0).toFixed(1)},${(padT+plotH).toFixed(1)} Z`;
+
+  const yTickCount = 4;
+  const gridlines = Array.from({length:yTickCount+1}, (_,i)=>{
+    const v = lo + (hi-lo)*(i/yTickCount);
+    const yy = yAt(v);
+    return `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+      <text x="${(padL-8).toFixed(1)}" y="${(yy+3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)" font-family="IBM Plex Mono, monospace">${esc(money(round2(v)))}</text>`;
+  }).join("");
+
+  const labelEvery = Math.max(1, Math.ceil(points.length/9));
+  const xLabels = points.map((p,i)=>{
+    if(i%labelEvery!==0 && i!==points.length-1) return "";
+    // First/last labels anchor to start/end instead of centering, so a full "YYYY-MM-DD" string at the
+    // very edge of the plot never overflows past the SVG's own viewBox and gets clipped.
+    const anchor = i===0 ? "start" : (i===points.length-1 ? "end" : "middle");
+    return `<text x="${xAt(i).toFixed(1)}" y="${H-12}" text-anchor="${anchor}" font-size="10" fill="var(--muted)">${esc(p.date)}</text>`;
+  }).join("");
+
+  const dots = points.map((p,i)=>{
+    const color = p.alert==="up" ? "var(--critical)" : p.alert==="down" ? "var(--good)" : "var(--ink)";
+    const r = p.alert ? 5 : 4;
+    const changeTxt = p.changePct!==null ? ` (${p.changePct>=0?"+":""}${Math.round(p.changePct*100)}%)` : "";
+    const tip = `${p.date}: ${money(p.cost)}${changeTxt}`;
+    const arrowLabel = p.alert ? `<text x="${xAt(i).toFixed(1)}" y="${(yAt(p.cost) + (p.alert==="up" ? -12 : 20)).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="var(--ink)">${p.alert==="up"?"▲":"▼"} ${Math.abs(Math.round(p.changePct*100))}%</text>` : "";
+    return `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(p.cost).toFixed(1)}" r="${r}" fill="${color}" stroke="var(--surface)" stroke-width="2"><title>${esc(tip)}</title></circle>${arrowLabel}`;
+  }).join("");
+
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; display:block;" role="img" aria-label="Price history for ${esc(baseProduct)}">
+    ${gridlines}
+    <path d="${areaPath}" fill="var(--accent)" opacity="0.08" stroke="none"/>
+    <path d="${linePath}" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${dots}
+    ${xLabels}
+  </svg>`;
+}
+
+function renderPriceHistory(){
+  const alertPct = Number(DATA.shoppingList.priceAlertPct)||0.25;
+  const alerts30 = recentPriceAlerts(30);
+  const productNames = Array.from(new Set(DATA.purchaseCosts.filter(p=>p.baseProduct && isReceived(p)).map(p=>p.baseProduct))).sort();
+
+  // Default to the biggest current alert if there is one — that's almost always what someone opening
+  // this page actually wants to see first — otherwise the first product alphabetically, otherwise none.
+  if(!priceHistorySelectedProduct || !productNames.includes(priceHistorySelectedProduct)){
+    priceHistorySelectedProduct = (alerts30[0] && alerts30[0].baseProduct) || productNames[0] || null;
+  }
+
+  const productOptions = productNames.map(bp=>`<option value="${esc(bp)}" ${bp===priceHistorySelectedProduct?"selected":""}>${esc(bp)}</option>`).join("");
+
+  const alertRows = alerts30.map(a=>`
+    <tr>
+      <td>${esc(a.baseProduct)}</td>
+      <td class="helptext">${esc(a.date)}</td>
+      <td class="num">${money(a.prevCost)} → ${money(a.cost)}</td>
+      <td>${chip((a.direction==="up"?"▲ +":"▼ ")+Math.round(a.changePct*100)+"%", a.direction==="up"?"critical":"good")}</td>
+      <td><button class="btn small" data-select-product="${esc(a.baseProduct)}">View chart</button></td>
+    </tr>`).join("");
+
+  const points = priceHistorySelectedProduct ? priceHistoryForProduct(priceHistorySelectedProduct) : [];
+  const tableRows = points.slice().reverse().map(p=>`
+    <tr>
+      <td class="helptext">${esc(p.date)}</td>
+      <td class="num">${money(p.cost)}</td>
+      <td class="num">${p.changePct!==null ? (p.changePct>=0?"+":"")+Math.round(p.changePct*100)+"%" : "—"}</td>
+      <td>${p.alert ? chip((p.alert==="up"?"▲ big increase":"▼ big drop"), p.alert==="up"?"critical":"good") : ""}</td>
+    </tr>`).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Price History</h2><p>Tracks the received cost of every product purchase over time and flags any move of ${Math.round(alertPct*100)}% or more from one purchase to the next, up or down — so a price spike (or a supplier finally coming down) never goes unnoticed.</p></div>
+    </div>
+    <div class="cardrow">
+      <div class="stat"><div class="label">Products tracked</div><div class="value">${productNames.length}</div></div>
+      <div class="stat"><div class="label">Alerts (30d)</div><div class="value" style="color:${alerts30.length?'var(--warn)':'var(--good)'}">${alerts30.length}</div></div>
+      <div class="stat"><div class="label">Big increases (30d)</div><div class="value" style="color:${alerts30.some(a=>a.direction==='up')?'var(--critical)':'var(--good)'}">${alerts30.filter(a=>a.direction==='up').length}</div></div>
+      <div class="stat"><div class="label">Big drops (30d)</div><div class="value" style="color:var(--good)">${alerts30.filter(a=>a.direction==='down').length}</div></div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Alert threshold</h3><div class="desc">How big a move (either direction) has to be, purchase to purchase, to count as an alert.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Alert threshold %</label><input type="number" step="1" min="1" id="priceAlertPctInput" value="${round2(alertPct*100)}"></div>
+          <div><button class="btn primary" id="savePriceAlertPct">Save</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Recent alerts</h3><div class="desc">${alerts30.length} product${alerts30.length===1?"":"s"} with a big move in the last 30 days, biggest first.</div></div></div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th>Date</th><th>Was → Now</th><th>Move</th><th></th></tr></thead>
+          <tbody>${alertRows || `<tr><td colspan="5" class="empty">No big moves in the last 30 days.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>${priceHistorySelectedProduct ? esc(priceHistorySelectedProduct) : "Price chart"}</h3><div class="desc">Received cost per purchase, oldest to newest.</div></div>
+        <div class="field" style="min-width:220px;"><label>Product</label><select id="priceHistoryProductSel">${productOptions || `<option value="">No products with received purchases yet</option>`}</select></div>
+      </div>
+      <div class="cardbody">
+        ${priceHistorySelectedProduct ? renderPriceChart(priceHistorySelectedProduct, points) : `<div class="empty">Nothing to chart yet — once a purchase is logged and received, its price history will show up here.</div>`}
+      </div>
+      ${points.length ? `<div class="cardbody" style="padding-top:0;">
+        <div class="tablewrap" style="border:1px solid var(--line); border-radius:8px; max-height:320px; overflow-y:auto;"><table>
+          <thead><tr><th>Date</th><th class="num">Cost</th><th class="num">Change</th><th>Flag</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table></div>
+      </div>` : ""}
     </div>`;
 }
 
@@ -3535,6 +3751,22 @@ function wireTabEvents(){
         DATA.purchaseCosts.splice(i,1);
         persist("Purchase entry removed", ["purchaseCosts"]);
       });
+    });
+  }
+
+  if(currentTab==="pricehistory"){
+    const sel = document.getElementById("priceHistoryProductSel");
+    if(sel) sel.addEventListener("change", (e)=>{ priceHistorySelectedProduct = e.target.value || null; render(); });
+    document.querySelectorAll("[data-select-product]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        priceHistorySelectedProduct = btn.dataset.selectProduct;
+        render();
+      });
+    });
+    document.getElementById("savePriceAlertPct").addEventListener("click", ()=>{
+      const raw = Number(document.getElementById("priceAlertPctInput").value);
+      DATA.shoppingList.priceAlertPct = (raw>0 ? raw : 25)/100;
+      persist("Alert threshold saved", ["shoppingList"]);
     });
   }
 
