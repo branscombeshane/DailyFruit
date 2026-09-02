@@ -450,8 +450,9 @@ if(!TABS.some(t=>t.id===currentTab)){
 }
 
 // who can see which tab. Owner: everything. Procurement: the day-to-day buying workflow (Receiving
-// included, but read-only — see canManageReceiving/renderReceiving). Stock Taker: just counting stock
-// (their Shopping List view is further restricted to read-only inside renderShoppingList/renderBuyCell).
+// included, and can confirm deliveries too — see canManageReceiving/renderReceiving). Stock Taker: just
+// counting stock (their Shopping List view is further restricted to read-only inside
+// renderShoppingList/renderBuyCell).
 // Receiving: a new role, scoped to just confirming deliveries — see canManageReceiving.
 // "home" (the landing Dashboard) is Owner + Procurement only, by Shane's explicit request — Stock Taker
 // and Receiving stay scoped to their single-purpose tab, same as before.
@@ -488,11 +489,11 @@ function roleCanAccessTab(role, tabId){
 function canManagePurchases(){
   return !!currentUser && (currentUser.role==="owner" || currentUser.role==="procurement");
 }
-// Confirming a delivery is deliberately a DIFFERENT capability from logging one — Procurement can see
-// the Receiving tab (so they know what's still outstanding, e.g. herbs ordered that morning) but only
-// Owner and the Receiving role can actually confirm a delivery arrived. See renderReceiving().
+// Confirming a delivery used to be a different capability from logging one (Owner/Receiving only,
+// Procurement read-only) — Shane asked to let Procurement receive too, since they're often the ones
+// on hand when a delivery actually arrives. See renderReceiving().
 function canManageReceiving(){
-  return !!currentUser && (currentUser.role==="owner" || currentUser.role==="receiving");
+  return !!currentUser && (currentUser.role==="owner" || currentUser.role==="receiving" || currentUser.role==="procurement");
 }
 
 function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
@@ -1919,8 +1920,8 @@ function renderShoppingArchive(){
 // until someone confirms it actually arrived. Solves the case that prompted this (herbs ordered from a
 // farmer in the morning, delivered after Procurement has gone for the day, with no price until the
 // invoice comes) but applies to every purchase, so nothing's numbers are ever treated as final without
-// someone having actually laid eyes on the delivery. Owner and the Receiving role can confirm; everyone
-// else who can see this tab (Procurement) gets a read-only view of what's still outstanding.
+// someone having actually laid eyes on the delivery. Owner, Receiving and Procurement can all confirm;
+// Stock Taker (which can't even see this tab — see ROLE_TABS) is the only role that can't.
 const RECEIVING_RECENT_DAYS = 7;
 function renderReceiving(){
   const manage = canManageReceiving();
@@ -1988,7 +1989,7 @@ function renderReceiving(){
 
   return `
     <div class="pagehead">
-      <div><h2>Receiving</h2><p>${manage ? "Count what's actually arrived and enter it below — the ordered quantity is hidden on purpose so it doesn't get rubber-stamped. Your count and cost here become the real, final numbers used for costing (Sage CSV, Product Mixes)." : "What's still outstanding, and what's been confirmed recently. Read-only — Owner or Receiving confirms deliveries here."}</p></div>
+      <div><h2>Receiving</h2><p>${manage ? "Count what's actually arrived and enter it below — the ordered quantity is hidden on purpose so it doesn't get rubber-stamped. Your count and cost here become the real, final numbers used for costing (Sage CSV, Product Mixes)." : "What's still outstanding, and what's been confirmed recently. Read-only for your role."}</p></div>
     </div>
     <div class="cardrow">
       <div class="stat"><div class="label">Pending delivery</div><div class="value" style="color:${pending.length?'var(--warn)':'var(--good)'}">${pending.length}</div></div>
@@ -3040,7 +3041,7 @@ function renderUsers(){
       <div class="cardhead"><div><h3>What each role can access</h3></div></div>
       <div class="cardbody helptext">
         <strong>Owner</strong> — everything, including Users and Backup &amp; Restore. Lands on the Dashboard when logging in.<br>
-        <strong>Procurement</strong> — Dashboard, Shopping List, Quick Buy, Shopping List Archive, Purchase Costs, Sage CSV, Input Stock Levels, and a read-only view of Receiving (can see what's outstanding, can't confirm a delivery). Lands on the Dashboard when logging in.<br>
+        <strong>Procurement</strong> — Dashboard, Shopping List, Quick Buy, Shopping List Archive, Purchase Costs, Sage CSV, Input Stock Levels, and Receiving (can confirm deliveries too, not just see what's outstanding). Lands on the Dashboard when logging in.<br>
         <strong>Stock Taker</strong> — Input Stock Levels, and a read-only Shopping List. No Dashboard.<br>
         <strong>Receiving</strong> — only the Receiving tab, to log stock as it's counted in. For staff whose only job is receiving deliveries (e.g. a night-shift hand) — they don't need or see anything else. No Dashboard.
       </div>
