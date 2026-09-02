@@ -1924,6 +1924,19 @@ function renderShoppingArchive(){
 // someone having actually laid eyes on the delivery. Owner, Receiving and Procurement can all confirm;
 // Stock Taker (which can't even see this tab — see ROLE_TABS) is the only role that can't.
 const RECEIVING_RECENT_DAYS = 7;
+// Spells out the actual ordered vs. received figures on a discrepancy flag, rather than a bare "qty
+// differs" — the original ordered qty/cost is otherwise invisible once a line is received (it's
+// deliberately hidden pre-receipt too, per Shane's blind-count request), so without this there's no way
+// to check a flagged discrepancy is real without going to the underlying sheet. Shared by Receiving's
+// own "Recently received" table and the Dashboard's discrepancy card, so both always agree.
+function discrepancyChipHtml(p){
+  const disc = receivingDiscrepancy(p);
+  if(!disc) return "";
+  return chip("⚠ " + [
+    disc.qtyDiff ? `qty differs (ordered ${fmtNum(p.qty)}, received ${fmtNum(p.receivedQty)})` : null,
+    disc.costDiff ? `cost differs (ordered ${money(p.cost)}, received ${money(p.receivedCost)})` : null,
+  ].filter(Boolean).join(", "), "warn");
+}
 function renderReceiving(){
   const manage = canManageReceiving();
   const todayStr = new Date().toISOString().slice(0,10);
@@ -1972,13 +1985,12 @@ function renderReceiving(){
   }).join("");
 
   const receivedRows = recentlyReceivedShown.map(p=>{
-    const disc = receivingDiscrepancy(p);
     const editing = receivingEditing.has(p.id);
     // No p.qty at all means this row never went through the order queue — it was logged directly here
     // as stock that showed up with nothing on file (see the "Log stock with no order on file" card
     // below), most often because procurement forgot to log the order in the first place.
     const noOrder = p.qty===undefined || p.qty===null || p.qty==="";
-    const discFlag = disc ? chip("⚠ " + [disc.qtyDiff?"qty differs":null, disc.costDiff?"cost differs":null].filter(Boolean).join(", "), "warn") : "";
+    const discFlag = discrepancyChipHtml(p);
     const noOrderFlag = noOrder ? chip("no order on file","neutral") : "";
     const editForm = manage && editing ? `
       <div class="buyrow" data-receive-row="${esc(p.id||"")}" style="display:flex;align-items:center;gap:4px;white-space:nowrap;margin-top:4px;">
@@ -2123,15 +2135,12 @@ function renderHomeDashboard(){
     </tr>`;
   }).join("");
 
-  const discrepancyHtml = discrepancyRows.slice(0,10).map(p=>{
-    const disc = receivingDiscrepancy(p);
-    return `
+  const discrepancyHtml = discrepancyRows.slice(0,10).map(p=>`
     <tr>
       <td>${esc(p.baseProduct)}</td>
       <td class="helptext">received ${esc(p.receivedDate||"—")}</td>
-      <td>${chip("⚠ " + [disc.qtyDiff?"qty differs":null, disc.costDiff?"cost differs":null].filter(Boolean).join(", "),"warn")}</td>
-    </tr>`;
-  }).join("");
+      <td>${discrepancyChipHtml(p)}</td>
+    </tr>`).join("");
 
   const flaggedHtml = flaggedRows.slice(0,10).map(r=>`
     <tr>
