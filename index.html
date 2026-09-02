@@ -410,6 +410,7 @@ let quickBuyEditingId = null; // id of the purchase line being corrected, or nul
 // ids of already-received purchase lines currently showing an editable received-qty/received-cost form
 // again (to correct a mistake) — pending (not-yet-received) lines always show the form, no toggle needed.
 let receivingEditing = new Set();
+let receivingSearch = ""; // filters BOTH the Pending delivery and Recently received tables on Receiving, by base product or supplier — see renderReceiving()
 
 const NAV = [
   {group:"Overview", items:[
@@ -1934,7 +1935,16 @@ function renderReceiving(){
     .slice().sort((a,b)=> (b.receivedDate||"").localeCompare(a.receivedDate||""));
   const discrepancyCount = recentlyReceived.filter(p=> receivingDiscrepancy(p)).length;
 
-  const pendingRows = pending.map(p=>{
+  // Search filters BOTH tables below by base product or supplier — the stat tiles above stay as
+  // totals regardless (same convention as Shopping List's category/status filters vs. its stat tiles).
+  const search = receivingSearch.trim().toLowerCase();
+  const matchesReceivingSearch = (p)=> !search
+    || (p.baseProduct||"").toLowerCase().includes(search)
+    || (p.supplier||"").toLowerCase().includes(search);
+  const pendingShown = pending.filter(matchesReceivingSearch);
+  const recentlyReceivedShown = recentlyReceived.filter(matchesReceivingSearch);
+
+  const pendingRows = pendingShown.map(p=>{
     const hasCost = p.cost!==undefined && p.cost!==null && p.cost!=="";
     const overdue = p.date && p.date < todayStr;
     // Deliberately NOT showing the ordered quantity here (and not pre-filling receive-qty with it) —
@@ -1961,7 +1971,7 @@ function renderReceiving(){
     </tr>`;
   }).join("");
 
-  const receivedRows = recentlyReceived.map(p=>{
+  const receivedRows = recentlyReceivedShown.map(p=>{
     const disc = receivingDiscrepancy(p);
     const editing = receivingEditing.has(p.id);
     // No p.qty at all means this row never went through the order queue — it was logged directly here
@@ -1990,6 +2000,9 @@ function renderReceiving(){
   return `
     <div class="pagehead">
       <div><h2>Receiving</h2><p>${manage ? "Count what's actually arrived and enter it below — the ordered quantity is hidden on purpose so it doesn't get rubber-stamped. Your count and cost here become the real, final numbers used for costing (Sage CSV, Product Mixes)." : "What's still outstanding, and what's been confirmed recently. Read-only for your role."}</p></div>
+      <div class="actions">
+        <div class="field" style="min-width:220px;"><label>Search</label><input type="text" id="receivingSearchInput" placeholder="Base product or supplier…" value="${esc(receivingSearch)}"></div>
+      </div>
     </div>
     <div class="cardrow">
       <div class="stat"><div class="label">Pending delivery</div><div class="value" style="color:${pending.length?'var(--warn)':'var(--good)'}">${pending.length}</div></div>
@@ -2012,20 +2025,20 @@ function renderReceiving(){
     ${datalistOptions("baseProductsDL", distinctBaseProducts())}
     ` : ""}
     <div class="card">
-      <div class="cardhead"><div><h3>Pending delivery</h3><div class="desc">${pending.length} order(s) awaiting confirmation, oldest first.</div></div></div>
+      <div class="cardhead"><div><h3>Pending delivery</h3><div class="desc">${search ? `${pendingShown.length} of ${pending.length}` : pending.length} order(s) awaiting confirmation, oldest first.</div></div></div>
       <div class="cardbody" style="padding:0;">
         <div class="tablewrap" style="border:none;border-radius:0;"><table>
           <thead><tr><th>Base product</th><th>Category</th><th>Ordered</th><th>Cost</th><th>Supplier</th><th>Ordered by</th><th>${manage?"Confirm received":"Status"}</th></tr></thead>
-          <tbody>${pendingRows || `<tr><td colspan="7" class="empty">Nothing outstanding — everything logged so far has been confirmed received.</td></tr>`}</tbody>
+          <tbody>${pendingRows || (search ? `<tr><td colspan="7" class="empty">No pending deliveries match "${esc(receivingSearch)}".</td></tr>` : `<tr><td colspan="7" class="empty">Nothing outstanding — everything logged so far has been confirmed received.</td></tr>`)}</tbody>
         </table></div>
       </div>
     </div>
     <div class="card">
-      <div class="cardhead"><div><h3>Recently received</h3><div class="desc">Confirmed in the last ${RECEIVING_RECENT_DAYS} days. A discrepancy flag means what arrived didn't match what was ordered.</div></div></div>
+      <div class="cardhead"><div><h3>Recently received</h3><div class="desc">${search ? `${recentlyReceivedShown.length} of ${recentlyReceived.length} shown, c` : "C"}onfirmed in the last ${RECEIVING_RECENT_DAYS} days. A discrepancy flag means what arrived didn't match what was ordered.</div></div></div>
       <div class="cardbody" style="padding:0;">
         <div class="tablewrap" style="border:none;border-radius:0;"><table>
           <thead><tr><th>Base product</th><th>Dates</th><th>Received</th><th>Received by</th><th></th></tr></thead>
-          <tbody>${receivedRows || `<tr><td colspan="5" class="empty">Nothing confirmed received in this window yet.</td></tr>`}</tbody>
+          <tbody>${receivedRows || (search ? `<tr><td colspan="5" class="empty">No recently received lines match "${esc(receivingSearch)}".</td></tr>` : `<tr><td colspan="5" class="empty">Nothing confirmed received in this window yet.</td></tr>`)}</tbody>
         </table></div>
       </div>
     </div>`;
@@ -3437,6 +3450,13 @@ function wireTabEvents(){
   }
 
   if(currentTab==="receiving"){
+    const receivingSearchInput = document.getElementById("receivingSearchInput");
+    if(receivingSearchInput){
+      receivingSearchInput.addEventListener("input", (e)=>{
+        receivingSearch = e.target.value;
+        render();
+      });
+    }
     // Confirms a pending order (always visible, no toggle needed) OR saves a correction to an
     // already-received line (only reachable via data-receive-edit below) — same handler either way,
     // since both are just "submit these received-qty/received-cost inputs for this id".
