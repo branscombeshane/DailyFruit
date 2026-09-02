@@ -1691,7 +1691,7 @@ function renderQuickBuy(){
       <div style="margin-bottom:16px;">
         <div class="helptext" style="font-weight:600;margin-bottom:6px;">Already logged today</div>
         ${todaysLines.map(e=>`<div class="quickbuylogrow">
-            <span>${purchaseLineChip(e)}</span>
+            <span>${purchaseLineChip(e)} ${e.loggedBy ? `<span class="helptext">logged by ${esc(e.loggedBy)}</span>` : ""}</span>
             <span style="display:flex;align-items:center;gap:10px;">
               <button class="btn small" data-quickbuy-edit-line="${esc(e.id||"")}">Edit</button>
               <button class="delbtn" data-quickbuy-delete-id="${esc(e.id||"")}" title="Delete this entry">✕</button>
@@ -1799,7 +1799,7 @@ function renderQuickBuy(){
     if(type==="purchase"){
       return `
       <div class="quickbuylogrow">
-        <span>${esc(baseProduct)}${entry.supplier ? ` <span class="helptext">(${esc(entry.supplier)})</span>` : ""}</span>
+        <span>${esc(baseProduct)}${entry.supplier ? ` <span class="helptext">(${esc(entry.supplier)})</span>` : ""} ${entry.loggedBy ? `<span class="helptext">— logged by ${esc(entry.loggedBy)}</span>` : ""}</span>
         <span style="display:flex;align-items:center;gap:10px;">
           ${purchaseLineChip(entry)}
           <button class="btn small" data-quickbuy-edit-purchase="${esc(baseProduct)}" data-quickbuy-edit-id="${esc(entry.id||"")}">Edit</button>
@@ -1809,7 +1809,7 @@ function renderQuickBuy(){
     }
     return `
     <div class="quickbuylogrow">
-      <span>${esc(baseProduct)}</span>
+      <span>${esc(baseProduct)} ${entry.loggedBy ? `<span class="helptext">— logged by ${esc(entry.loggedBy)}</span>` : ""}</span>
       <span style="display:flex;align-items:center;gap:10px;">
         ${chip("Unable: " + entry.reason, "critical")}
         <button class="btn small" data-quickbuy-edit-issue="${esc(baseProduct)}">Edit</button>
