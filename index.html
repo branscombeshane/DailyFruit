@@ -1550,7 +1550,10 @@ function renderBuyCell(r, today){
     </div>`;
   }
 
-  const prefillQty = editingExisting && editingExisting.qty!==undefined && editingExisting.qty!==null ? editingExisting.qty : (!editingExisting && r.toBuy!==null ? r.toBuy : "");
+  // Qty is left blank for a fresh line — Shane's call: prefilling it with the suggested/required amount
+  // meant it was easy to tick through without actually checking what's being ordered. Editing an
+  // existing line still shows what was actually entered, so a correction isn't retyped from scratch.
+  const prefillQty = editingExisting && editingExisting.qty!==undefined && editingExisting.qty!==null ? editingExisting.qty : "";
   const prefillCost = editingExisting && editingExisting.cost!==undefined && editingExisting.cost!==null ? editingExisting.cost : "";
   const prefillSupplier = editingExisting ? (editingExisting.supplier||"") : "";
   return `<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;">
@@ -1692,7 +1695,10 @@ function renderQuickBuy(){
     // today that's being corrected in place (buying the same product from two suppliers today is
     // legitimate, so picking this product again defaults to ADDING another line, not editing the first)
     const editingLine = quickBuyEditingId ? todaysLines.find(e=>e.id===quickBuyEditingId) : null;
-    const prefillQty = editingLine && editingLine.qty!==undefined && editingLine.qty!==null ? editingLine.qty : (!editingLine && row.toBuy!==null && row.toBuy!==undefined ? row.toBuy : "");
+    // Qty is left blank for a fresh line — same reasoning as the Shopping List buy row: prefilling with
+    // the suggested/required amount meant it was easy to tick through without actually checking what's
+    // being ordered. Editing an existing line still shows what was actually entered.
+    const prefillQty = editingLine && editingLine.qty!==undefined && editingLine.qty!==null ? editingLine.qty : "";
     const prefillCost = editingLine && editingLine.cost!==undefined && editingLine.cost!==null ? editingLine.cost : "";
     const prefillSupplier = editingLine ? (editingLine.supplier||"") : "";
     const prefillReason = existingIssue ? existingIssue.reason : "";
