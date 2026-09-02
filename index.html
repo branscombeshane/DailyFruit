@@ -418,6 +418,11 @@ let receivingSearch = ""; // filters BOTH the Pending delivery and Recently rece
 // default RECEIVING_RECENT_DAYS window (unchanged behavior); setting either overrides it — see renderReceiving()
 let receivingDateFrom = "";
 let receivingDateTo = "";
+// Stock Variance (shrinkage) tab — both view-only, never sent to the backend: how big a gap (as % of
+// expected closing stock) counts as real shrinkage/surplus rather than normal counting noise, and which
+// status the table is narrowed to. Resets to the 5% default each time the tab is opened fresh.
+let stockVarianceFlagPct = 0.05;
+let stockVarianceStatusFilter = "";
 
 const NAV = [
   {group:"Overview", items:[
@@ -447,6 +452,7 @@ const NAV = [
   ]},
   {group:"Admin", items:[
     {id:"users", label:"Users"},
+    {id:"stockvariance", label:"Stock Variance"},
     {id:"backup", label:"Backup & Restore"},
   ]},
 ];
@@ -465,7 +471,7 @@ if(!TABS.some(t=>t.id===currentTab)){
 // "home" (the landing Dashboard) is Owner + Procurement only, by Shane's explicit request — Stock Taker
 // and Receiving stay scoped to their single-purpose tab, same as before.
 const ROLE_TABS = {
-  owner: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","dashboard","salesdata","itemsetup","recipes","purchase","pricehistory","sageimport","stocktake","users","backup"],
+  owner: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","dashboard","salesdata","itemsetup","recipes","purchase","pricehistory","sageimport","stocktake","users","stockvariance","backup"],
   procurement: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","purchase","pricehistory","sageimport","stocktake"],
   stocktaker: ["shoppinglist","stocktake"],
   receiving: ["receiving"],
@@ -761,6 +767,91 @@ function shoppingListComputed(){
     return a.baseProduct.localeCompare(b.baseProduct);
   });
   return rows;
+}
+
+// ---------- Stock Variance (shrinkage) ----------
+// Owner-only diagnostic (see NAV/ROLE_TABS): for each base product, compares its two most recent Stock
+// Take counts — an opening count and a closing count — against everything Purchase Costs says came IN
+// between them and everything the sales reports say went OUT, to see whether the numbers actually add
+// up. Whatever's short is shrinkage; whatever's over is a surplus (miscounts happen too, in both
+// directions). Nothing new to enter for this — it's built entirely from Stock Take, Receiving and Item
+// Sales data that already exists for other reasons.
+//
+// Window convention: "in between" means dated strictly AFTER the opening count's date, through and
+// including the closing count's date — the opening count is treated as the position at the START of
+// that day, before that day's activity, so its own day's purchases/sales aren't double-counted.
+//
+// The one thing this can't do anything about: if even one day inside that window has no Item Sales
+// report uploaded (or the product had no usable conversion factor set up that day — see
+// itemSetupDerived), there's no way to know what actually sold that day, so the whole window is marked
+// "Incomplete data" rather than showing a number that's silently wrong. See isoDatesBetween below.
+
+// Every calendar date strictly after startExclusive, up to and including endInclusive.
+function isoDatesBetween(startExclusive, endInclusive){
+  const out = [];
+  const d = new Date(startExclusive + "T00:00:00Z");
+  const end = new Date(endInclusive + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate()+1);
+  while(d <= end){
+    out.push(d.toISOString().slice(0,10));
+    d.setUTCDate(d.getUTCDate()+1);
+  }
+  return out;
+}
+
+function stockVarianceComputed(){
+  // date -> that day's archived per-base-product demand snapshot (see archiveSalesSnapshot) — frozen
+  // using whatever conversion factors were set up on the day it was archived.
+  const salesByDate = {};
+  DATA.salesHistory.forEach(h=>{ salesByDate[h.date] = h.demand || {}; });
+
+  const rows = distinctBaseProducts().map(baseProduct=>{
+    const takes = DATA.stockTakes.filter(r=>r.baseProduct===baseProduct).slice().sort((a,b)=> a.date.localeCompare(b.date));
+    if(takes.length < 2){
+      return {baseProduct, status:"Not enough stock takes", takesCount: takes.length};
+    }
+    const opening = takes[takes.length-2];
+    const closing = takes[takes.length-1];
+    const windowDates = isoDatesBetween(opening.date, closing.date);
+    // a date is usable for this product only if that day's report was uploaded AND this specific
+    // product had a computable demand figure that day (see itemSetupDerived — a product missing a
+    // conversion factor at the time doesn't get an entry, even on a day that was otherwise uploaded)
+    const missingDates = windowDates.filter(d => !(salesByDate[d] && Object.prototype.hasOwnProperty.call(salesByDate[d], baseProduct)));
+    const purchasesInWindow = DATA.purchaseCosts
+      .filter(p=> p.baseProduct===baseProduct && isReceived(p) && p.receivedDate > opening.date && p.receivedDate <= closing.date)
+      .reduce((s,p)=> s + (Number(p.receivedQty)||0), 0);
+    if(missingDates.length){
+      return {baseProduct, status:"Incomplete data", openingDate:opening.date, closingDate:closing.date,
+        opening:Number(opening.amount), closing:Number(closing.amount), purchasesInWindow, missingDates};
+    }
+    const salesUsage = windowDates.reduce((s,d)=> s + (Number(salesByDate[d][baseProduct])||0), 0);
+    const expectedClosing = Number(opening.amount) + purchasesInWindow - salesUsage;
+    const variance = Number(closing.amount) - expectedClosing;
+    const variancePct = expectedClosing > 0 ? variance/expectedClosing : (variance===0 ? 0 : null);
+    return {baseProduct, status:"Computed", openingDate:opening.date, closingDate:closing.date,
+      opening:Number(opening.amount), closing:Number(closing.amount), purchasesInWindow, salesUsage,
+      expectedClosing, variance, variancePct, windowDays: windowDates.length};
+  });
+
+  // Worst shrinkage first (most negative variance), then surplus/balanced, then the two "can't tell yet"
+  // buckets — same "most urgent first, never hide a row" spirit as shoppingListComputed's own sort.
+  rows.sort((a,b)=>{
+    const rank = r => r.status==="Computed" ? 0 : r.status==="Incomplete data" ? 1 : 2;
+    const ra = rank(a), rb = rank(b);
+    if(ra!==rb) return ra-rb;
+    if(ra===0 && a.variance!==b.variance) return a.variance - b.variance;
+    return a.baseProduct.localeCompare(b.baseProduct);
+  });
+  return rows;
+}
+// Classifies a "Computed" row against the (view-only, not persisted — see stockVarianceFlagPct)
+// tolerance threshold: small variances are normal counting noise, not real shrinkage.
+function stockVarianceClass(row, flagPct){
+  if(row.status!=="Computed") return row.status;
+  const pct = row.variancePct;
+  const overThreshold = pct!==null ? Math.abs(pct)>=flagPct : Math.abs(row.variance)>0.0001;
+  if(!overThreshold) return "Balanced";
+  return row.variance < 0 ? "Shrinkage" : "Surplus";
 }
 
 // Buying the same base product from two different suppliers on the same day is normal (that's the
@@ -1217,6 +1308,7 @@ function render(){
     else if(currentTab==="sageimport") pageHtml = renderSageImport();
     else if(currentTab==="stocktake") pageHtml = renderStockTake();
     else if(currentTab==="users") pageHtml = renderUsers();
+    else if(currentTab==="stockvariance") pageHtml = renderStockVariance();
     else if(currentTab==="backup") pageHtml = renderBackup();
     // shown above whichever page is current, on every tab, until reloaded — a bulk save (Item Setup /
     // Product Mixes / Settings / Users) can be refused from any of those pages, and this needs to stay
@@ -3057,6 +3149,95 @@ function renderStockTake(){
     </div>`;
 }
 
+// ---------- Stock Variance (shrinkage) ----------
+function stockVarianceStatusChip(label){
+  const kind = {"Shrinkage":"critical","Surplus":"warn","Balanced":"good","Incomplete data":"warn","Not enough stock takes":"neutral"}[label] || "neutral";
+  return chip(label, kind);
+}
+function renderStockVariance(){
+  const flagPct = (Number(stockVarianceFlagPct)>=0 ? Number(stockVarianceFlagPct) : 0.05);
+  const allRows = stockVarianceComputed().map(r=> Object.assign({}, r, {display: stockVarianceClass(r, flagPct)}));
+
+  const counts = {"Shrinkage":0,"Surplus":0,"Balanced":0,"Incomplete data":0,"Not enough stock takes":0};
+  allRows.forEach(r=> counts[r.display] = (counts[r.display]||0)+1);
+
+  const statusList = ["Shrinkage","Surplus","Balanced","Incomplete data","Not enough stock takes"];
+  const statusOptions = `<option value="">All statuses</option>` +
+    statusList.map(s=>`<option value="${esc(s)}" ${s===stockVarianceStatusFilter?"selected":""}>${esc(s)} (${counts[s]||0})</option>`).join("");
+
+  const rows = stockVarianceStatusFilter ? allRows.filter(r=> r.display===stockVarianceStatusFilter) : allRows;
+
+  const tableRows = rows.map(r=>{
+    if(r.status==="Not enough stock takes"){
+      return `<tr>
+        <td>${esc(r.baseProduct)}</td>
+        <td colspan="7" class="helptext">Only ${r.takesCount} stock take${r.takesCount===1?"":"s"} on file — needs at least 2 (an opening and a closing count) before a variance can be worked out.</td>
+        <td>${stockVarianceStatusChip(r.display)}</td>
+      </tr>`;
+    }
+    const windowLabel = `${esc(r.openingDate)} → ${esc(r.closingDate)}`;
+    if(r.status==="Incomplete data"){
+      const shownMissing = r.missingDates.slice(0,4).map(esc).join(", ");
+      const moreCount = r.missingDates.length - 4;
+      return `<tr>
+        <td>${esc(r.baseProduct)}</td>
+        <td class="helptext">${windowLabel}</td>
+        <td class="num">${fmtNum(r.opening)}</td>
+        <td class="num">${fmtNum(r.purchasesInWindow)}</td>
+        <td colspan="4" class="helptext">No Item Sales report (or no usable conversion factor that day) for: ${shownMissing}${moreCount>0?` and ${moreCount} more`:""} — can't tell what actually sold, so this window can't be checked.</td>
+        <td>${stockVarianceStatusChip(r.display)}</td>
+      </tr>`;
+    }
+    // colored to match the Status column's classification (which already accounts for the flag
+    // threshold) rather than raw sign — a tiny, within-tolerance variance shouldn't read as alarming red
+    const varianceKind = r.display==="Shrinkage" ? "critical" : r.display==="Surplus" ? "warn" : "good";
+    const varianceChip = chip((r.variance>0?"+":"")+fmtNum(r.variance)+(r.variancePct!==null?` (${r.variance>0?"+":""}${Math.round(r.variancePct*100)}%)`:""), varianceKind);
+    return `<tr>
+      <td>${esc(r.baseProduct)}</td>
+      <td class="helptext">${windowLabel}</td>
+      <td class="num">${fmtNum(r.opening)}</td>
+      <td class="num">${fmtNum(r.purchasesInWindow)}</td>
+      <td class="num">${fmtNum(r.salesUsage)}</td>
+      <td class="num">${fmtNum(r.expectedClosing)}</td>
+      <td class="num">${fmtNum(r.closing)}</td>
+      <td>${varianceChip}</td>
+      <td>${stockVarianceStatusChip(r.display)}</td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Stock Variance</h2><p>For each product, compares the two most recent Stock Take counts against what Receiving says came in and what the Item Sales reports say went out in between, to see whether the numbers actually add up. Owner-only — nothing new to enter, it's built entirely from Stock Take, Receiving and Item Sales data already on file. A window with a gap in daily sales report coverage is marked "Incomplete data" rather than guessing.</p></div>
+    </div>
+    <div class="cardrow">
+      <div class="stat"><div class="label">Shrinkage</div><div class="value" style="color:${counts["Shrinkage"]?'var(--critical)':'var(--good)'}">${counts["Shrinkage"]}</div></div>
+      <div class="stat"><div class="label">Surplus</div><div class="value" style="color:${counts["Surplus"]?'var(--warn)':'var(--good)'}">${counts["Surplus"]}</div></div>
+      <div class="stat"><div class="label">Balanced</div><div class="value" style="color:var(--good)">${counts["Balanced"]}</div></div>
+      <div class="stat"><div class="label">Incomplete data</div><div class="value small">${counts["Incomplete data"]}</div></div>
+      <div class="stat"><div class="label">Not enough stock takes</div><div class="value small">${counts["Not enough stock takes"]}</div></div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><div><h3>Flag threshold</h3><div class="desc">How big the gap between expected and actual closing stock has to be, as a % of expected, to count as real shrinkage or surplus rather than normal counting noise. Not saved — resets to 5% next time this tab is opened.</div></div></div>
+      <div class="cardbody">
+        <div class="formgrid">
+          <div class="field"><label>Flag threshold %</label><input type="number" step="1" min="0" id="stockVarianceFlagPctInput" value="${round2(flagPct*100)}"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Products</h3><div class="desc">${rows.length}${stockVarianceStatusFilter?` of ${allRows.length}`:""} product(s), worst shrinkage first.</div></div>
+        <div class="field" style="min-width:200px;"><label>Status</label><select id="stockVarianceStatusFilterSel">${statusOptions}</select></div>
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th>Window</th><th class="num">Opening</th><th class="num">Purchases</th><th class="num">Sales usage</th><th class="num">Expected</th><th class="num">Actual</th><th>Variance</th><th>Status</th></tr></thead>
+          <tbody>${tableRows || `<tr><td colspan="9" class="empty">${stockVarianceStatusFilter ? `No products are currently "${esc(stockVarianceStatusFilter)}".` : "No products with at least two stock takes yet."}</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+}
+
 // ---------- Users ----------
 function renderUsers(){
   const users = DATA.users || [];
@@ -4062,6 +4243,20 @@ function wireTabEvents(){
       };
       reader.onerror = ()=> toast("Could not read that file");
       reader.readAsText(file);
+    });
+  }
+
+  if(currentTab==="stockvariance"){
+    const flagInput = document.getElementById("stockVarianceFlagPctInput");
+    if(flagInput) flagInput.addEventListener("input", (e)=>{
+      const v = Number(e.target.value);
+      stockVarianceFlagPct = (v>=0 ? v : 0)/100;
+      render();
+    });
+    const statusSel = document.getElementById("stockVarianceStatusFilterSel");
+    if(statusSel) statusSel.addEventListener("change", (e)=>{
+      stockVarianceStatusFilter = e.target.value;
+      render();
     });
   }
 
