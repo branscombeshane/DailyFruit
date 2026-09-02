@@ -269,7 +269,7 @@ function emptyDataShape(){
     salesA: [], salesB: [], itemSetup: [], recipes: [],
     procurementPlan: {coverMultiplier:1, safetyBuffer:0, historyWindow:30},
     purchaseCosts: [], baseProductCategories: {},
-    stockTakes: [], shoppingList: {criticalPct:0.25, overstockPct:1.5, priceAlertPct:0.25},
+    stockTakes: [], shoppingList: {criticalPct:0.25, overstockPct:1.5, priceAlertPct:0.25, buyPct:1},
     users: [{name:"Owner", pin:"1234", role:"owner"}],
     purchaseIssues: [], salesHistory: [],
     categoryBuffers: {}, productCycles: {}, productCeilings: {},
@@ -283,6 +283,7 @@ function applyDataDefaults(d){
   if(!d.stockTakes) d.stockTakes = []; // backward-compatible default for backups predating Stock Take history
   if(!d.shoppingList) d.shoppingList = {criticalPct:0.25, overstockPct:1.5}; // backward-compatible default for backups predating the Shopping List
   if(d.shoppingList.priceAlertPct===undefined || d.shoppingList.priceAlertPct===null) d.shoppingList.priceAlertPct = 0.25; // backward-compatible default for backups/sheets predating Price History
+  if(d.shoppingList.buyPct===undefined || d.shoppingList.buyPct===null) d.shoppingList.buyPct = 1; // backward-compatible default (100% = old hardcoded behavior) for backups/sheets predating the configurable Buy/OK boundary
   if(d.stockLevels){
     // migrate the earlier undated "current levels only" shape into a dated archive entry, then drop it
     const migrationDate = new Date().toISOString().slice(0,10);
@@ -716,6 +717,7 @@ function shoppingListComputed(){
   const stockMap = latestStockTakeMap();
   const critPct = Number(DATA.shoppingList.criticalPct)||0.25;
   const overPct = Number(DATA.shoppingList.overstockPct)||1.5;
+  const buyPct = Number(DATA.shoppingList.buyPct)||1; // ratio below which stock still counts as "Buy" (Consider Buying); at/above it, and below the overstock threshold, it's OK — defaults to 100% (old hardcoded behavior)
   const rows = plan.map(row=>{
     const stockEntry = stockMap[row.baseProduct] || null;
     const currentStock = stockEntry ? stockEntry.amount : null;
@@ -731,7 +733,7 @@ function shoppingListComputed(){
     } else {
       ratio = currentStock / recommended;
       if(ratio <= critPct) status = "Critical";
-      else if(ratio < 1) status = "Buy";
+      else if(ratio < buyPct) status = "Buy";
       else if(ratio >= overPct) status = "Overstocked";
       else status = "OK";
       toBuy = Math.max(0, Math.ceil(recommended - currentStock));
@@ -1405,9 +1407,16 @@ function statusChip(status){
   if(!status) return "";
   return chip(status,"critical");
 }
+// Display wording differs from the internal status string for "Buy": the sheet/status-code value
+// stays "Buy" everywhere in logic (filters, counts, comparisons) so nothing else has to change, but
+// everywhere it's shown to a person it reads "Consider Buying" — a 75%-of-target item that'll comfortably
+// last until tomorrow's delivery shouldn't read as an urgent imperative.
+function shoppingStatusLabel(status){
+  return status==="Buy" ? "Consider Buying" : status;
+}
 function shoppingStatusChip(status){
   const kind = {"Critical":"critical","Buy":"warn","OK":"good","Overstocked":"neutral","No stock take":"neutral","Missing setup":"neutral"}[status] || "neutral";
-  return chip(status, kind);
+  return chip(shoppingStatusLabel(status), kind);
 }
 
 // Shared label + chip for one purchase line, used everywhere a purchase shows up (Shopping List's buy
@@ -1573,7 +1582,7 @@ function renderShoppingList(){
 
   const statusList = ["Critical","Buy","Overstocked","No stock take","Missing setup","OK"];
   const statusOptions = `<option value="">All statuses</option>` +
-    statusList.map(s=>`<option value="${esc(s)}" ${s===shoppingStatusFilter?"selected":""}>${esc(s)} (${counts[s]||0})</option>`).join("");
+    statusList.map(s=>`<option value="${esc(s)}" ${s===shoppingStatusFilter?"selected":""}>${esc(shoppingStatusLabel(s))} (${counts[s]||0})</option>`).join("");
 
   let rows = all;
   if(shoppingCategoryFilter) rows = rows.filter(r=> (r.category||"Uncategorized")===shoppingCategoryFilter);
@@ -1608,7 +1617,7 @@ function renderShoppingList(){
     ${noStockTakesYet ? `<div class="banner warn">No stock takes recorded yet — log today's counts in Stock Take, then this list will show what needs buying.</div>` : ""}
     <div class="cardrow">
       ${statBlock("Critical","Critical",counts["Critical"],"var(--critical)")}
-      ${statBlock("Recommended to buy","Buy",counts["Buy"],"var(--warn)")}
+      ${statBlock("Consider Buying","Buy",counts["Buy"],"var(--warn)")}
       ${statBlock("OK","OK",counts["OK"],"var(--good)")}
       ${statBlock("Overstocked","Overstocked",counts["Overstocked"],"var(--muted)")}
       ${boughtTodayBlock(boughtTodayCount)}
@@ -2062,7 +2071,7 @@ function renderHomeDashboard(){
     <tr>
       <td>${esc(r.baseProduct)}</td>
       <td>${esc(r.category||"—")}</td>
-      <td>${shoppingStatusChip(r.status)}</td>
+      <td>${shoppingStatusChip(r.status)}<br>${stockPctBadge(r)}</td>
       <td class="num">${r.currentStock!==null ? fmtNum(r.currentStock) : "—"}</td>
       <td class="num">${r.toBuy!==null ? fmtNum(r.toBuy,0) : "—"}</td>
       <td>${esc(r.procUnit||"—")}</td>
@@ -2130,13 +2139,13 @@ function renderHomeDashboard(){
     </div>
     <div class="card">
       <div class="cardhead">
-        <div><h3>Needs buying today</h3><div class="desc">Critical or Buy stock with nothing logged yet today — ${needsActionRows.length} of ${shoppingRows.length} tracked products.</div></div>
+        <div><h3>Needs buying today</h3><div class="desc">Critical or Consider Buying stock with nothing logged yet today — ${needsActionRows.length} of ${shoppingRows.length} tracked products.</div></div>
         ${goto("shoppinglist","Open Shopping List →")}
       </div>
       <div class="cardbody" style="padding:0;">
         <div class="tablewrap" style="border:none;border-radius:0;"><table>
           <thead><tr><th>Base product</th><th>Category</th><th>Status</th><th class="num">Current stock</th><th class="num">Suggested buy</th><th>Unit</th></tr></thead>
-          <tbody>${needsActionHtml || `<tr><td colspan="6" class="empty">Nothing outstanding — everything Critical or Buy has been logged for today.</td></tr>`}</tbody>
+          <tbody>${needsActionHtml || `<tr><td colspan="6" class="empty">Nothing outstanding — everything Critical or Consider Buying has been logged for today.</td></tr>`}</tbody>
         </table></div>
       </div>
     </div>
@@ -2208,6 +2217,7 @@ function renderDashboard(){
   const historyPeriods = DATA.salesHistory.length;
   const critPct = Number(DATA.shoppingList.criticalPct)||0.25;
   const overPct = Number(DATA.shoppingList.overstockPct)||1.5;
+  const buyPct = Number(DATA.shoppingList.buyPct)||1;
   const pendingReceiving = DATA.purchaseCosts.filter(p=> p.baseProduct && !isReceived(p)).length;
   const recentReceivingCutoff = new Date(Date.now() - RECEIVING_RECENT_DAYS*86400000).toISOString().slice(0,10);
   const receivingDiscrepancies = DATA.purchaseCosts.filter(p=> p.baseProduct && isReceived(p) && p.receivedDate >= recentReceivingCutoff && receivingDiscrepancy(p)).length;
@@ -2268,12 +2278,14 @@ function renderDashboard(){
       </div>
     </div>
     <div class="card">
-      <div class="cardhead"><div><h3>Shopping List thresholds</h3><div class="desc">Stock at or below the critical % of target is flagged Critical on the Shopping List; at or above the overstock % is flagged Overstocked. Anything else below 100% of target is Buy.</div></div></div>
+      <div class="cardhead"><div><h3>Shopping List thresholds</h3><div class="desc">Stock at or below the critical % of target is flagged Critical; at or above the overstock % is flagged Overstocked; at or above the "good until" % is OK. Anything in between is Consider Buying. Set "good until" below 100% for stock that's genuinely fine even though it's under target — e.g. 75% on hand that'll comfortably last until tomorrow's delivery.</div></div></div>
       <div class="cardbody">
         <div class="formgrid">
           <div class="field"><label>Critical threshold (% of target)</label><input type="number" step="1" min="0" id="shoppingCriticalPct" value="${round2(critPct*100)}"></div>
+          <div class="field"><label>Good until (% of target)</label><input type="number" step="1" min="0" max="100" id="shoppingBuyPct" value="${round2(buyPct*100)}"></div>
           <div class="field"><label>Overstock threshold (% of target)</label><input type="number" step="1" min="100" id="shoppingOverstockPct" value="${round2(overPct*100)}"></div>
         </div>
+        <div class="helptext" style="margin-top:10px;">Stock at or above this % of target counts as OK ("good until") instead of Consider Buying — defaults to 100%, meaning anything below target is Consider Buying. Lower it if being partway to target is still comfortably enough stock until the next delivery.</div>
       </div>
     </div>
     ${renderManageCategories()}
@@ -3438,8 +3450,10 @@ function wireTabEvents(){
       DATA.procurementPlan.historyWindow = (hwRaw>=7) ? Math.round(hwRaw) : 90;
       const critRaw = Number(document.getElementById("shoppingCriticalPct").value);
       const overRaw = Number(document.getElementById("shoppingOverstockPct").value);
+      const buyRaw = Number(document.getElementById("shoppingBuyPct").value);
       DATA.shoppingList.criticalPct = (critRaw>0 ? critRaw : 25)/100;
       DATA.shoppingList.overstockPct = (overRaw>100 ? overRaw : 150)/100;
+      DATA.shoppingList.buyPct = (buyRaw>0 && buyRaw<=100 ? buyRaw : 100)/100;
       document.querySelectorAll("[data-catbuffer-input]").forEach(inp=>{
         const cat = inp.dataset.catbufferInput;
         const v = inp.value.trim();
