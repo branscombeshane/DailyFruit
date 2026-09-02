@@ -1474,6 +1474,18 @@ function parseSalesCsvText(text){
 }
 
 // ---------- Shopping List ----------
+// A logged "purchase issue" for a product today is either a genuine supply problem — "Unable to
+// purchase", with a free-text reason, shown as a critical/red chip — or a deliberate decision not to
+// buy today because there's already enough stock on hand to comfortably last until tomorrow's
+// delivery. Both live in the same DATA.purchaseIssues table (see unableEntryForDate) and are told
+// apart purely by this canned reason string, so no separate "type" column/backend change is needed —
+// a real "unable" reason typed by hand is never going to happen to match it exactly.
+const SUFFICIENT_STOCK_REASON = "Have enough stock till tomorrow";
+function issueChipHtml(issue){
+  if(!issue) return "";
+  if(issue.reason === SUFFICIENT_STOCK_REASON) return chip("✓ " + SUFFICIENT_STOCK_REASON, "good");
+  return chip("✕ Unable: " + issue.reason, "critical");
+}
 // Renders every purchase LINE logged today for this base product as its own chip (buying the same
 // product from two suppliers on the same day is normal now, not a duplicate) — each showing "Ordered"
 // (amber) until the Receiving role confirms it arrived, then "✓" (green) with the actual received
@@ -1487,7 +1499,7 @@ function renderBuyCell(r, today){
   const entries = purchaseEntriesForDate(bp, today);
   const issue = unableEntryForDate(bp, today);
   const issueChip = issue ? `<span style="display:inline-flex;align-items:center;gap:4px;">
-      ${chip("Unable: " + issue.reason,"critical")}
+      ${issueChipHtml(issue)}
       ${canManagePurchases() ? `<button class="btn" data-issue-edit="${esc(bp)}" style="padding:1px 6px;font-size:11px;">Edit</button>
       <button class="delbtn" data-issue-delete="${esc(bp)}" title="Delete this entry">✕</button>` : ""}
     </span>` : "";
@@ -1495,7 +1507,7 @@ function renderBuyCell(r, today){
   if(!canManagePurchases()){
     // read-only role (Stock Taker): show what's ordered/received (or why it wasn't), no way to log/edit here
     const parts = entries.map(e=> purchaseLineChip(e));
-    if(issue) parts.push(chip("Unable: " + issue.reason,"critical"));
+    if(issue) parts.push(issueChipHtml(issue));
     if(!parts.length) return `<span class="helptext">—</span>`;
     return parts.join(" ");
   }
@@ -1527,7 +1539,8 @@ function renderBuyCell(r, today){
       ${lineChips}
       ${issueChip}
       <button class="btn" data-buy-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ ${entries.length?"Add another":"Log order"}</button>
-      ${!issue ? `<button class="btn" data-issue-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ Unable to buy</button>` : ""}
+      ${!issue ? `<button class="btn" data-issue-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ Unable to buy</button>
+      <button class="btn" data-sufficient-addnew="${esc(bp)}" style="padding:2px 10px;font-size:12px;white-space:nowrap;">+ Have enough stock</button>` : ""}
     </div>`;
   }
 
@@ -1682,9 +1695,10 @@ function renderQuickBuy(){
       : (row.currentStock===null ? "no stock take yet" : "");
 
     const modeToggle = `
-      <div style="display:flex;gap:8px;margin-bottom:16px;">
-        <button class="btn ${quickBuyMode==='buy'?'primary':''}" data-quickbuy-setmode="buy" style="flex:1;">Log order</button>
-        <button class="btn ${quickBuyMode==='unable'?'primary':''}" data-quickbuy-setmode="unable" style="flex:1;">Unable to purchase</button>
+      <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
+        <button class="btn ${quickBuyMode==='buy'?'primary':''}" data-quickbuy-setmode="buy" style="flex:1 1 120px;">Log order</button>
+        <button class="btn ${quickBuyMode==='unable'?'primary':''}" data-quickbuy-setmode="unable" style="flex:1 1 120px;">Unable to purchase</button>
+        <button class="btn ${quickBuyMode==='sufficient'?'primary':''}" data-quickbuy-setmode="sufficient" style="flex:1 1 120px;">Enough stock till tomorrow</button>
       </div>`;
 
     const todaysLinesList = todaysLines.length ? `
@@ -1715,6 +1729,10 @@ function renderQuickBuy(){
       </div>
       <button class="btn primary" id="quickBuyLogUnable" style="width:100%;font-size:16px;padding:15px;margin-top:14px;background:var(--critical);border-color:var(--critical);">✕ Log as unable to purchase</button>`;
 
+    const sufficientForm = `
+      <div class="helptext" style="margin-bottom:14px;">Logs today as skipped for this product — you already have enough on hand to comfortably last until tomorrow's delivery. It won't show as needing action on the Dashboard or Shopping List today.</div>
+      <button class="btn primary" id="quickBuyLogSufficient" style="width:100%;font-size:16px;padding:15px;background:var(--good);border-color:var(--good);">✓ Log — enough stock till tomorrow</button>`;
+
     bodyHtml = `
       <div class="card">
         <div class="cardbody">
@@ -1732,7 +1750,7 @@ function renderQuickBuy(){
           </div>
           ${quickBuyMode==='buy' ? todaysLinesList : ""}
           ${modeToggle}
-          ${quickBuyMode==='unable' ? unableForm : buyForm}
+          ${quickBuyMode==='unable' ? unableForm : quickBuyMode==='sufficient' ? sufficientForm : buyForm}
         </div>
       </div>`;
   } else {
@@ -1752,7 +1770,7 @@ function renderQuickBuy(){
         return chip((allReceived?"✓ ":"📦 ") + lines.length + " order(s) logged", allReceived?"good":"warn");
       }
       const issue = unableEntryForDate(r.baseProduct, today);
-      if(issue) return chip("✕ " + issue.reason, "critical");
+      if(issue) return issueChipHtml(issue);
       return "";
     };
 
@@ -1811,12 +1829,15 @@ function renderQuickBuy(){
     <div class="quickbuylogrow">
       <span>${esc(baseProduct)} ${entry.loggedBy ? `<span class="helptext">— logged by ${esc(entry.loggedBy)}</span>` : ""}</span>
       <span style="display:flex;align-items:center;gap:10px;">
-        ${chip("Unable: " + entry.reason, "critical")}
+        ${issueChipHtml(entry)}
         <button class="btn small" data-quickbuy-edit-issue="${esc(baseProduct)}">Edit</button>
         <button class="delbtn" data-quickbuy-delete-issue="${esc(baseProduct)}" title="Delete this entry">✕</button>
       </span>
     </div>`;
   }).join("") : `<div class="empty">Nothing logged yet today.</div>`;
+
+  const todaysUnableCount = todaysIssues.filter(p=> p.reason!==SUFFICIENT_STOCK_REASON).length;
+  const todaysSufficientCount = todaysIssues.length - todaysUnableCount;
 
   return `
     <div class="pagehead">
@@ -1824,7 +1845,7 @@ function renderQuickBuy(){
     </div>
     ${bodyHtml}
     <div class="card">
-      <div class="cardhead"><h3>Logged today</h3><div class="desc">${esc(today)} — ${todaysEntries.length} ${todaysEntries.length===1?"order":"orders"}, ${todaysIssues.length} unable to purchase</div></div>
+      <div class="cardhead"><h3>Logged today</h3><div class="desc">${esc(today)} — ${todaysEntries.length} ${todaysEntries.length===1?"order":"orders"}, ${todaysUnableCount} unable to purchase, ${todaysSufficientCount} enough stock till tomorrow</div></div>
       <div class="cardbody">${loggedHtml}</div>
     </div>`;
 }
@@ -1856,7 +1877,7 @@ function renderShoppingArchive(){
       const purchases = purchaseEntriesForDate(r.baseProduct, shoppingArchiveDate);
       const issue = unableEntryForDate(r.baseProduct, shoppingArchiveDate);
       const parts = purchases.map(e=> purchaseLineChip(e));
-      if(issue) parts.push(chip("Unable: " + issue.reason, "critical"));
+      if(issue) parts.push(issueChipHtml(issue));
       return `
       <tr>
         <td>${esc(r.baseProduct)}</td>
@@ -3208,6 +3229,23 @@ function wireTabEvents(){
         persistPurchaseAction({action:"deletePurchaseIssue", date:today, baseProduct:bp}, "Deleted unable-to-purchase entry for " + bp);
       });
     });
+    // "Have enough stock" — a one-click alternative to "Unable to purchase": no reason to type, it
+    // just logs the same canned SUFFICIENT_STOCK_REASON into purchaseIssues (see issueChipHtml), which
+    // is enough on its own to drop this product off the Dashboard's "needs buying today" list too.
+    document.querySelectorAll("[data-sufficient-addnew]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const bp = btn.dataset.sufficientAddnew;
+        const today = new Date().toISOString().slice(0,10);
+        DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+        const entry = {date:today, baseProduct:bp, reason:SUFFICIENT_STOCK_REASON};
+        if(currentUser) entry.loggedBy = currentUser.name;
+        DATA.purchaseIssues.push(entry);
+        shoppingIssueEditing.delete(bp);
+        shoppingBuyEditing.delete(bp);
+        persistPurchaseAction({action:"logPurchaseIssue", entry}, "Logged " + bp + " as having enough stock till tomorrow");
+      });
+    });
   }
 
   if(currentTab==="quickbuy"){
@@ -3233,7 +3271,10 @@ function wireTabEvents(){
           // default to whichever form matches what's already logged for today, else the purchase form;
           // picking a product fresh always starts a NEW line (buying it again today, e.g. from a second
           // supplier, is normal) rather than editing whatever's already logged
-          quickBuyMode = (unableEntryForDate(bp, today) && !purchaseEntriesForDate(bp, today).length) ? "unable" : "buy";
+          const existingIssueForPick = unableEntryForDate(bp, today);
+          quickBuyMode = (existingIssueForPick && !purchaseEntriesForDate(bp, today).length)
+            ? (existingIssueForPick.reason===SUFFICIENT_STOCK_REASON ? "sufficient" : "unable")
+            : "buy";
           quickBuyEditingId = null;
           quickBuySelected = bp;
           render();
@@ -3312,6 +3353,23 @@ function wireTabEvents(){
           persistPurchaseAction({action:"logPurchaseIssue", entry}, "Logged " + bp + " as unable to purchase");
         });
       }
+      const sufficientBtn = document.getElementById("quickBuyLogSufficient");
+      if(sufficientBtn){
+        sufficientBtn.addEventListener("click", ()=>{
+          const today = new Date().toISOString().slice(0,10);
+          const bp = quickBuySelected;
+          DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
+          // can't be "enough stock" for something you already bought (from any supplier) today
+          DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> !(p.baseProduct===bp && p.date===today));
+          const entry = {date:today, baseProduct:bp, reason:SUFFICIENT_STOCK_REASON};
+          if(currentUser) entry.loggedBy = currentUser.name;
+          DATA.purchaseIssues.push(entry);
+          quickBuySelected = null;
+          quickBuyEditingId = null;
+          quickBuySearch = "";
+          persistPurchaseAction({action:"logPurchaseIssue", entry}, "Logged " + bp + " as having enough stock till tomorrow");
+        });
+      }
       document.querySelectorAll("[data-quickbuy-edit-line]").forEach(b=>{
         b.addEventListener("click", ()=>{
           quickBuyEditingId = b.dataset.quickbuyEditLine;
@@ -3330,9 +3388,12 @@ function wireTabEvents(){
     });
     document.querySelectorAll("[data-quickbuy-edit-issue]").forEach(b=>{
       b.addEventListener("click", ()=>{
-        quickBuySelected = b.dataset.quickbuyEditIssue;
+        const bp = b.dataset.quickbuyEditIssue;
+        quickBuySelected = bp;
         quickBuyEditingId = null;
-        quickBuyMode = "unable";
+        const today = new Date().toISOString().slice(0,10);
+        const existing = unableEntryForDate(bp, today);
+        quickBuyMode = (existing && existing.reason===SUFFICIENT_STOCK_REASON) ? "sufficient" : "unable";
         render();
       });
     });
