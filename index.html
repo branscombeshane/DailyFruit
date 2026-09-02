@@ -2748,18 +2748,31 @@ function renderPurchase(){
   const groupsHtml = groupDates.map(dateKey=>{
     const group = entries.filter(e=>e.dateKey===dateKey);
     const groupRows = group.map(({p,i,found,count})=>{
-      const hasQty = p.qty!==undefined && p.qty!==null && p.qty!=="";
-      const total = hasQty ? Number(p.qty)*Number(p.cost) : null;
+      // Once Receiving has confirmed a line, ITS numbers are the real, final ones (Receiving's own copy
+      // says as much) — a correction made there only ever touches receivedQty/receivedCost, never the
+      // original ordered qty/cost (see data-receive-tick in wire_events.js), so this used to keep
+      // showing the stale ordered figure forever even after a correction. Falls back to the ordered
+      // figure while still pending, or if a received line's cost genuinely wasn't captured at receiving
+      // time (receivedCost left blank on purpose).
+      const received = isReceived(p);
+      const hasReceivedQty = received && p.receivedQty!==undefined && p.receivedQty!==null && p.receivedQty!=="";
+      const hasReceivedCost = received && p.receivedCost!==undefined && p.receivedCost!==null && p.receivedCost!=="";
+      const displayQty = hasReceivedQty ? p.receivedQty : p.qty;
+      const displayCost = hasReceivedCost ? p.receivedCost : p.cost;
+      const hasQty = displayQty!==undefined && displayQty!==null && displayQty!=="";
+      const hasCost = displayCost!==undefined && displayCost!==null && displayCost!=="";
+      const total = (hasQty && hasCost) ? Number(displayQty)*Number(displayCost) : null;
       return `
       <tr>
-        <td>${esc(p.baseProduct)}</td>
-        <td class="num">${hasQty ? fmtNum(p.qty) : "—"}</td>
-        <td class="num">${money(p.cost)}</td>
+        <td>${esc(p.baseProduct)}${!received ? ` ${chip("Ordered","neutral")}` : ""}</td>
+        <td class="num">${hasQty ? fmtNum(displayQty) : "—"}</td>
+        <td class="num">${hasCost ? money(displayCost) : "—"}</td>
         <td class="num">${total!==null ? money(total) : "—"}</td>
         <td>${esc(p.supplier||"—")}</td>
         <td>${found?statusChip("OK"):statusChip("NOT FOUND")}</td>
         <td class="num">${count}</td>
         <td class="helptext">${esc(p.loggedBy||"—")}</td>
+        <td class="helptext">${esc(p.receivedBy||"—")}</td>
         <td><button class="delbtn" data-del-purchase="${i}" title="Remove row">✕</button></td>
       </tr>`;
     }).join("");
@@ -2767,8 +2780,8 @@ function renderPurchase(){
       <div class="tablewrap" style="border:none;border-radius:0;border-bottom:1px solid var(--line);">
         <table>
           <thead>
-            <tr><th colspan="9" style="font-size:13px;text-transform:none;letter-spacing:0;color:var(--ink);">${esc(dateKey)} — ${group.length} ${group.length===1?"entry":"entries"}</th></tr>
-            <tr><th>Base product</th><th class="num">Qty</th><th class="num">Cost / unit</th><th class="num">Total</th><th>Supplier</th><th>Found?</th><th class="num">Item codes affected</th><th>Logged by</th><th></th></tr>
+            <tr><th colspan="10" style="font-size:13px;text-transform:none;letter-spacing:0;color:var(--ink);">${esc(dateKey)} — ${group.length} ${group.length===1?"entry":"entries"}</th></tr>
+            <tr><th>Base product</th><th class="num">Qty</th><th class="num">Cost / unit</th><th class="num">Total</th><th>Supplier</th><th>Found?</th><th class="num">Item codes affected</th><th>Logged by</th><th>Received by</th><th></th></tr>
           </thead>
           <tbody>${groupRows}</tbody>
         </table>
@@ -2822,7 +2835,7 @@ function renderPurchase(){
     </div>
     <div class="card">
       <div class="cardhead">
-        <div><h3>Current entries</h3><div class="desc">Multiple lines for the same product on the same day (different suppliers) are expected — remove a line only if it was a mistake.</div></div>
+        <div><h3>Current entries</h3><div class="desc">Multiple lines for the same product on the same day (different suppliers) are expected — remove a line only if it was a mistake. Qty/Cost/Total show the confirmed Receiving figures once a line's been received (including any correction made there) — the "Ordered" tag marks a line still awaiting confirmation, still showing what it was ordered at.</div></div>
         <div class="field" style="min-width:170px;">
           <label>Filter by date</label>
           <select id="purchDateFilter">${dateFilterOptions}</select>
