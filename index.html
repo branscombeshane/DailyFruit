@@ -386,6 +386,9 @@ let purchaseDraftDate = "";
 let purchaseDraftLines = [];
 let purchaseDateFilter = "";
 let priceHistorySelectedProduct = null; // which base product's chart is showing on the Price History page
+// which of the three alert-type stat tiles at the top of Price History is active: "" (Alerts, all of
+// them), "up" (Big increases only), or "down" (Big drops only) — filters the Recent alerts table below.
+let priceHistoryAlertFilter = "";
 let stockCategoryFilter = "";
 let stockTakeDate = new Date().toISOString().slice(0,10);
 let stockArchiveDateFilter = "";
@@ -2798,6 +2801,16 @@ function renderPriceChart(baseProduct, points){
   </svg>`;
 }
 
+// Clickable summary tile for the three alert-type stats atop Price History — clicking one filters the
+// Recent alerts table below to just that slice (clicking the already-active one clears back to all),
+// same toggle convention as Shopping List's status tiles (statBlock) above.
+function priceStatBlock(label, filterValue, count, color, small){
+  const active = priceHistoryAlertFilter === filterValue;
+  return `<div class="stat clickable${active?" active":""}" data-price-alert-filter="${esc(filterValue)}" title="Show only ${esc(label)}${active?" (click again to clear)":""}">
+    <div class="label">${esc(label)}</div><div class="value${small?" small":""}" style="color:${color}">${count}</div>
+  </div>`;
+}
+
 function renderPriceHistory(){
   const alertPct = Number(DATA.shoppingList.priceAlertPct)||0.25;
   const alerts30 = recentPriceAlerts(30);
@@ -2811,7 +2824,8 @@ function renderPriceHistory(){
 
   const productOptions = productNames.map(bp=>`<option value="${esc(bp)}" ${bp===priceHistorySelectedProduct?"selected":""}>${esc(bp)}</option>`).join("");
 
-  const alertRows = alerts30.map(a=>`
+  const alerts30Shown = priceHistoryAlertFilter ? alerts30.filter(a=> a.direction===priceHistoryAlertFilter) : alerts30;
+  const alertRows = alerts30Shown.map(a=>`
     <tr>
       <td>${esc(a.baseProduct)}</td>
       <td class="helptext">${esc(a.date)}</td>
@@ -2835,9 +2849,9 @@ function renderPriceHistory(){
     </div>
     <div class="cardrow">
       <div class="stat"><div class="label">Products tracked</div><div class="value">${productNames.length}</div></div>
-      <div class="stat"><div class="label">Alerts (30d)</div><div class="value" style="color:${alerts30.length?'var(--warn)':'var(--good)'}">${alerts30.length}</div></div>
-      <div class="stat"><div class="label">Big increases (30d)</div><div class="value" style="color:${alerts30.some(a=>a.direction==='up')?'var(--critical)':'var(--good)'}">${alerts30.filter(a=>a.direction==='up').length}</div></div>
-      <div class="stat"><div class="label">Big drops (30d)</div><div class="value" style="color:var(--good)">${alerts30.filter(a=>a.direction==='down').length}</div></div>
+      ${priceStatBlock("Alerts (30d)", "", alerts30.length, alerts30.length?'var(--warn)':'var(--good)')}
+      ${priceStatBlock("Big increases (30d)", "up", alerts30.filter(a=>a.direction==='up').length, alerts30.some(a=>a.direction==='up')?'var(--critical)':'var(--good)')}
+      ${priceStatBlock("Big drops (30d)", "down", alerts30.filter(a=>a.direction==='down').length, 'var(--good)')}
     </div>
     <div class="card">
       <div class="cardhead"><div><h3>Alert threshold</h3><div class="desc">How big a move (either direction) has to be, purchase to purchase, to count as an alert.</div></div></div>
@@ -2849,11 +2863,11 @@ function renderPriceHistory(){
       </div>
     </div>
     <div class="card">
-      <div class="cardhead"><div><h3>Recent alerts</h3><div class="desc">${alerts30.length} product${alerts30.length===1?"":"s"} with a big move in the last 30 days, biggest first.</div></div></div>
+      <div class="cardhead"><div><h3>Recent alerts</h3><div class="desc">${alerts30Shown.length}${priceHistoryAlertFilter?` of ${alerts30.length}`:""} product${alerts30Shown.length===1?"":"s"} with a big ${priceHistoryAlertFilter==="up"?"increase":priceHistoryAlertFilter==="down"?"drop":"move"} in the last 30 days, biggest first.</div></div></div>
       <div class="cardbody" style="padding:0;">
         <div class="tablewrap" style="border:none;border-radius:0;"><table>
           <thead><tr><th>Base product</th><th>Date</th><th>Was → Now</th><th>Move</th><th></th></tr></thead>
-          <tbody>${alertRows || `<tr><td colspan="5" class="empty">No big moves in the last 30 days.</td></tr>`}</tbody>
+          <tbody>${alertRows || `<tr><td colspan="5" class="empty">${priceHistoryAlertFilter ? `No big ${priceHistoryAlertFilter==="up"?"increases":"drops"} in the last 30 days.` : "No big moves in the last 30 days."}</td></tr>`}</tbody>
         </table></div>
       </div>
     </div>
@@ -3923,6 +3937,13 @@ function wireTabEvents(){
       const raw = Number(document.getElementById("priceAlertPctInput").value);
       DATA.shoppingList.priceAlertPct = (raw>0 ? raw : 25)/100;
       persist("Alert threshold saved", ["shoppingList"]);
+    });
+    document.querySelectorAll("[data-price-alert-filter]").forEach(el=>{
+      el.addEventListener("click", ()=>{
+        const val = el.dataset.priceAlertFilter;
+        priceHistoryAlertFilter = (priceHistoryAlertFilter === val) ? "" : val;
+        render();
+      });
     });
   }
 
