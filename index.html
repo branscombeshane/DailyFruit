@@ -363,7 +363,7 @@ try{
 // re-render doesn't make them retype their name too.
 let loginNameInput = "";
 let loginError = "";
-let currentTab = "dashboard";
+let currentTab = "home";
 try{
   const savedTab = localStorage.getItem("dailyFruitCurrentTab");
   if(savedTab) currentTab = savedTab;
@@ -409,6 +409,9 @@ let quickBuyEditingId = null; // id of the purchase line being corrected, or nul
 let receivingEditing = new Set();
 
 const NAV = [
+  {group:"Overview", items:[
+    {id:"home", label:"Dashboard"},
+  ]},
   {group:"Shopping List", items:[
     {id:"shoppinglist", label:"Shopping List"},
     {id:"quickbuy", label:"Quick Buy"},
@@ -438,7 +441,7 @@ const NAV = [
 const TABS = NAV.flatMap(section=>section.items);
 if(!TABS.some(t=>t.id===currentTab)){
   // handles a tab id saved before a menu reorganisation (e.g. the removed Sage Master tab)
-  currentTab = "dashboard";
+  currentTab = "home";
   try{ localStorage.setItem("dailyFruitCurrentTab", currentTab); }catch(e){}
 }
 
@@ -446,22 +449,27 @@ if(!TABS.some(t=>t.id===currentTab)){
 // included, but read-only — see canManageReceiving/renderReceiving). Stock Taker: just counting stock
 // (their Shopping List view is further restricted to read-only inside renderShoppingList/renderBuyCell).
 // Receiving: a new role, scoped to just confirming deliveries — see canManageReceiving.
+// "home" (the landing Dashboard) is Owner + Procurement only, by Shane's explicit request — Stock Taker
+// and Receiving stay scoped to their single-purpose tab, same as before.
 const ROLE_TABS = {
-  owner: ["shoppinglist","quickbuy","shoppingarchive","receiving","dashboard","salesdata","itemsetup","recipes","purchase","sageimport","stocktake","users","backup"],
-  procurement: ["shoppinglist","quickbuy","shoppingarchive","receiving","purchase","sageimport","stocktake"],
+  owner: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","dashboard","salesdata","itemsetup","recipes","purchase","sageimport","stocktake","users","backup"],
+  procurement: ["home","shoppinglist","quickbuy","shoppingarchive","receiving","purchase","sageimport","stocktake"],
   stocktaker: ["shoppinglist","stocktake"],
   receiving: ["receiving"],
 };
 
 // Tabs where a background data refresh can safely swap DATA and re-render without ever wiping typing
 // that's only ever lived in the DOM: Shopping List, Quick Buy and the Shopping List Archive have
-// nothing that survives solely as an uncommitted input value. Every other tab turned out to have at
-// least one — including ones that look read-only at a glance: Dashboard doubles as the Calculated
-// Holdings settings screen (cover/buffer/threshold inputs, a "Save settings" button), Sage CSV carries
-// the category wastage-buffer table added earlier, and Receiving's pending-delivery rows carry their
-// own received-qty/received-cost inputs — so all three get the banner instead, same as the genuinely
-// edit-heavy tabs (Item Setup, Recipes, Item Sales, Purchase, Stock Take, Users, Backup).
-const SAFE_AUTO_REFRESH_TABS = new Set(["shoppinglist","quickbuy","shoppingarchive"]);
+// nothing that survives solely as an uncommitted input value — and neither does "home" (the landing
+// Dashboard), which is pure summary with no inputs of its own at all, just links into other tabs. Every
+// other tab turned out to have at least one uncommitted input — including ones that look read-only at a
+// glance: the "dashboard" tab id (Calculated Holdings — not to be confused with the "home" landing
+// Dashboard above) doubles as its settings screen (cover/buffer/threshold inputs, a "Save settings"
+// button), Sage CSV carries the category wastage-buffer table added earlier, and Receiving's
+// pending-delivery rows carry their own received-qty/received-cost inputs — so all three get the banner
+// instead, same as the genuinely edit-heavy tabs (Item Setup, Recipes, Item Sales, Purchase, Stock Take,
+// Users, Backup).
+const SAFE_AUTO_REFRESH_TABS = new Set(["home","shoppinglist","quickbuy","shoppingarchive"]);
 
 // Shopping List and Quick Buy DO have their own inline forms (buy/unable-to-purchase entry) even
 // though they're in the safe set above — those live as open Map/Set state plus typed-but-unsubmitted
@@ -1068,6 +1076,11 @@ function wireLoginEvents(){
     if(String(u.pin) !== String(pin)){ loginError = "Incorrect PIN"; render(); return; }
     currentUser = {name:u.name, role:u.role};
     try{ sessionStorage.setItem("dailyFruitUser", JSON.stringify(currentUser)); }catch(e){}
+    // Land on the Dashboard every time Owner/Procurement logs in, regardless of whatever tab this
+    // browser had open last time — that's the whole point of it being the landing page. Stock Taker and
+    // Receiving don't have a "home" tab at all (see ROLE_TABS), so they're left on whatever they had
+    // open before, same as always.
+    if(roleCanAccessTab(u.role, "home")) setCurrentTab("home");
     loginNameInput = "";
     loginError = "";
     render();
@@ -1123,7 +1136,8 @@ function render(){
     renderNav();
     const main = document.getElementById("main");
     let pageHtml = "";
-    if(currentTab==="shoppinglist") pageHtml = renderShoppingList();
+    if(currentTab==="home") pageHtml = renderHomeDashboard();
+    else if(currentTab==="shoppinglist") pageHtml = renderShoppingList();
     else if(currentTab==="quickbuy") pageHtml = renderQuickBuy();
     else if(currentTab==="shoppingarchive") pageHtml = renderShoppingArchive();
     else if(currentTab==="receiving") pageHtml = renderReceiving();
@@ -1929,6 +1943,179 @@ function renderReceiving(){
     </div>`;
 }
 
+// ---------- Home Dashboard (landing page, Owner + Procurement only) ----------
+// Pulls together the "needs attention" signal that already exists scattered across Shopping List,
+// Receiving, Calculated Holdings and Purchase Costs, so the first thing either role sees after logging
+// in is what actually needs doing — not a page they then have to go hunting through five tabs to piece
+// together themselves. Every number here is read STRAIGHT from the same computed functions those pages
+// already use (shoppingListComputed, procurementPlanComputed, isReceived/receivingDiscrepancy,
+// distinctBaseProducts) — never recomputed independently — so this can never quietly drift out of sync
+// with what those pages themselves show.
+function navStat(label, count, color, tabId){
+  return `<div class="stat clickable" data-goto-tab="${esc(tabId)}" title="Go to ${esc(label)}">
+    <div class="label">${esc(label)}</div><div class="value" style="color:${color}">${count}</div>
+  </div>`;
+}
+function plainStat(label, count, color){
+  return `<div class="stat"><div class="label">${esc(label)}</div><div class="value" style="color:${color}">${count}</div></div>`;
+}
+function renderHomeDashboard(){
+  const today = new Date().toISOString().slice(0,10);
+  // Calculated Holdings is Owner-only (see ROLE_TABS) — Procurement still gets told a number is flagged
+  // there since it affects what they should be buying, just without a dead link they can't follow.
+  const canSeeHoldings = roleCanAccessTab(currentUser.role, "dashboard");
+
+  // ---- Shopping List: what's still outstanding today ----
+  const hiddenCats = hiddenCategorySet();
+  const shoppingRows = shoppingListComputed().filter(r=> !hiddenCats.has(r.category||"Uncategorized"));
+  const criticalCount = shoppingRows.filter(r=> r.status==="Critical").length;
+  // "Needs action today" = actually still open — Critical/Buy AND nothing logged for it yet today
+  // (no purchase line, no "unable to purchase"). A Critical item already ordered this morning isn't
+  // sitting neglected, so it drops out of this list even though it's still Critical stock-wise.
+  const needsActionRows = shoppingRows.filter(r=>
+    (r.status==="Critical" || r.status==="Buy") &&
+    purchaseEntriesForDate(r.baseProduct, today).length===0 &&
+    !unableEntryForDate(r.baseProduct, today)
+  );
+
+  // ---- Receiving: pending, overdue, discrepancies (same source data as renderReceiving) ----
+  const pending = DATA.purchaseCosts.filter(p=> p.baseProduct && !isReceived(p))
+    .slice().sort((a,b)=> (a.date||"").localeCompare(b.date||"") || a.baseProduct.localeCompare(b.baseProduct));
+  const overduePending = pending.filter(p=> p.date && p.date < today);
+  const recentCutoff = new Date(Date.now() - RECEIVING_RECENT_DAYS*86400000).toISOString().slice(0,10);
+  const recentlyReceived = DATA.purchaseCosts.filter(p=> p.baseProduct && isReceived(p) && p.receivedDate >= recentCutoff);
+  const discrepancyRows = recentlyReceived.filter(p=> receivingDiscrepancy(p));
+
+  // ---- Calculated Holdings: consistency/missing-data flags ----
+  const planRows = procurementPlanComputed();
+  const flaggedRows = planRows.filter(r=> r.consistency!=="OK" || r.missing!=="OK");
+
+  // ---- Purchase Costs: base products logged that Item Setup doesn't recognize ----
+  const knownProducts = distinctBaseProducts();
+  const unmatchedNames = Array.from(new Set(
+    DATA.purchaseCosts.filter(p=> p.baseProduct && !knownProducts.includes(p.baseProduct)).map(p=>p.baseProduct)
+  )).sort();
+
+  const goto = (tabId, label)=> `<button class="btn small" data-goto-tab="${esc(tabId)}">${esc(label)}</button>`;
+
+  const needsActionHtml = needsActionRows.slice(0,15).map(r=>`
+    <tr>
+      <td>${esc(r.baseProduct)}</td>
+      <td>${esc(r.category||"—")}</td>
+      <td>${shoppingStatusChip(r.status)}</td>
+      <td class="num">${r.currentStock!==null ? fmtNum(r.currentStock) : "—"}</td>
+      <td class="num">${r.toBuy!==null ? fmtNum(r.toBuy,0) : "—"}</td>
+      <td>${esc(r.procUnit||"—")}</td>
+    </tr>`).join("");
+
+  const pendingHtml = pending.slice(0,10).map(p=>{
+    const overdue = p.date && p.date < today;
+    return `
+    <tr>
+      <td>${esc(p.baseProduct)}</td>
+      <td class="helptext">${esc(p.date||"—")}${overdue?` ${chip("overdue","warn")}`:""}</td>
+      <td>${esc(p.supplier||"—")}</td>
+      <td>${esc(p.loggedBy||"—")}</td>
+    </tr>`;
+  }).join("");
+
+  const discrepancyHtml = discrepancyRows.slice(0,10).map(p=>{
+    const disc = receivingDiscrepancy(p);
+    return `
+    <tr>
+      <td>${esc(p.baseProduct)}</td>
+      <td class="helptext">received ${esc(p.receivedDate||"—")}</td>
+      <td>${chip("⚠ " + [disc.qtyDiff?"qty differs":null, disc.costDiff?"cost differs":null].filter(Boolean).join(", "),"warn")}</td>
+    </tr>`;
+  }).join("");
+
+  const flaggedHtml = flaggedRows.slice(0,10).map(r=>`
+    <tr>
+      <td>${esc(r.baseProduct)}</td>
+      <td>${esc(r.category||"—")}</td>
+      <td>${statusChip(r.consistency)}</td>
+      <td>${statusChip(r.missing)}</td>
+    </tr>`).join("");
+
+  const unmatchedHtml = unmatchedNames.slice(0,10).map(bp=>{
+    const count = DATA.purchaseCosts.filter(p=>p.baseProduct===bp).length;
+    return `<tr><td>${esc(bp)}</td><td class="num">${count} line${count===1?"":"s"} logged</td></tr>`;
+  }).join("");
+
+  return `
+    <div class="pagehead">
+      <div><h2>Dashboard</h2><p>Everything that needs a look right now, pulled from Shopping List, Receiving, Calculated Holdings and Purchase Costs — open any section below for the full picture.</p></div>
+    </div>
+    <div class="cardrow">
+      ${navStat("Critical stock", criticalCount, criticalCount?'var(--critical)':'var(--good)', "shoppinglist")}
+      ${navStat("Needs action today", needsActionRows.length, needsActionRows.length?'var(--warn)':'var(--good)', "shoppinglist")}
+      ${navStat("Pending deliveries", pending.length, pending.length?'var(--warn)':'var(--good)', "receiving")}
+      ${navStat("Overdue orders", overduePending.length, overduePending.length?'var(--critical)':'var(--good)', "receiving")}
+    </div>
+    <div class="cardrow">
+      ${navStat("Receiving discrepancies ("+RECEIVING_RECENT_DAYS+"d)", discrepancyRows.length, discrepancyRows.length?'var(--warn)':'var(--good)', "receiving")}
+      ${canSeeHoldings
+        ? navStat("Flagged in Calculated Holdings", flaggedRows.length, flaggedRows.length?'var(--warn)':'var(--good)', "dashboard")
+        : plainStat("Flagged in Calculated Holdings (Owner only)", flaggedRows.length, flaggedRows.length?'var(--warn)':'var(--good)')}
+      ${navStat("Unmatched products", unmatchedNames.length, unmatchedNames.length?'var(--warn)':'var(--good)', "purchase")}
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Needs buying today</h3><div class="desc">Critical or Buy stock with nothing logged yet today — ${needsActionRows.length} of ${shoppingRows.length} tracked products.</div></div>
+        ${goto("shoppinglist","Open Shopping List →")}
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th>Category</th><th>Status</th><th class="num">Current stock</th><th class="num">Suggested buy</th><th>Unit</th></tr></thead>
+          <tbody>${needsActionHtml || `<tr><td colspan="6" class="empty">Nothing outstanding — everything Critical or Buy has been logged for today.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Receiving</h3><div class="desc">${pending.length} order(s) awaiting confirmation${overduePending.length?`, ${overduePending.length} overdue`:""}.</div></div>
+        ${goto("receiving","Open Receiving →")}
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th>Ordered</th><th>Supplier</th><th>Ordered by</th></tr></thead>
+          <tbody>${pendingHtml || `<tr><td colspan="4" class="empty">Nothing pending — everything logged so far has been confirmed received.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+      ${discrepancyRows.length ? `<div class="cardbody" style="padding-top:0;">
+        <div class="desc" style="margin-bottom:8px;">${discrepancyRows.length} discrepanc${discrepancyRows.length===1?"y":"ies"} in the last ${RECEIVING_RECENT_DAYS} days — what arrived didn't match what was ordered:</div>
+        <div class="tablewrap" style="border:1px solid var(--line); border-radius:8px;"><table>
+          <thead><tr><th>Base product</th><th>Received</th><th>Flag</th></tr></thead>
+          <tbody>${discrepancyHtml}</tbody>
+        </table></div>
+      </div>` : ""}
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Calculated Holdings flags</h3><div class="desc">${flaggedRows.length} of ${planRows.length} base products have inconsistent or missing data.</div></div>
+        ${canSeeHoldings ? goto("dashboard","Open Calculated Holdings →") : ""}
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th>Category</th><th>Consistency</th><th>Missing</th></tr></thead>
+          <tbody>${flaggedHtml || `<tr><td colspan="4" class="empty">Nothing flagged — every tracked product has clean, consistent data.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead">
+        <div><h3>Unmatched products</h3><div class="desc">Logged in a purchase but not found in Item Setup — usually a misspelling or a product that still needs setting up.</div></div>
+        ${goto("purchase","Open Purchase Costs →")}
+      </div>
+      <div class="cardbody" style="padding:0;">
+        <div class="tablewrap" style="border:none;border-radius:0;"><table>
+          <thead><tr><th>Base product</th><th></th></tr></thead>
+          <tbody>${unmatchedHtml || `<tr><td colspan="2" class="empty">Nothing unmatched — every logged purchase lines up with an Item Setup product.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+}
+
 // ---------- Dashboard / Procurement Plan ----------
 function renderDashboard(){
   const allRows = procurementPlanComputed();
@@ -2603,10 +2790,10 @@ function renderUsers(){
     <div class="card">
       <div class="cardhead"><div><h3>What each role can access</h3></div></div>
       <div class="cardbody helptext">
-        <strong>Owner</strong> — everything, including Users and Backup &amp; Restore.<br>
-        <strong>Procurement</strong> — Shopping List, Quick Buy, Shopping List Archive, Purchase Costs, Sage CSV, Input Stock Levels, and a read-only view of Receiving (can see what's outstanding, can't confirm a delivery).<br>
-        <strong>Stock Taker</strong> — Input Stock Levels, and a read-only Shopping List.<br>
-        <strong>Receiving</strong> — only the Receiving tab, to log stock as it's counted in. For staff whose only job is receiving deliveries (e.g. a night-shift hand) — they don't need or see anything else.
+        <strong>Owner</strong> — everything, including Users and Backup &amp; Restore. Lands on the Dashboard when logging in.<br>
+        <strong>Procurement</strong> — Dashboard, Shopping List, Quick Buy, Shopping List Archive, Purchase Costs, Sage CSV, Input Stock Levels, and a read-only view of Receiving (can see what's outstanding, can't confirm a delivery). Lands on the Dashboard when logging in.<br>
+        <strong>Stock Taker</strong> — Input Stock Levels, and a read-only Shopping List. No Dashboard.<br>
+        <strong>Receiving</strong> — only the Receiving tab, to log stock as it's counted in. For staff whose only job is receiving deliveries (e.g. a night-shift hand) — they don't need or see anything else. No Dashboard.
       </div>
     </div>`;
 }
@@ -2640,7 +2827,16 @@ function renderBackup(){
 
 
 function wireTabEvents(){
-    if(currentTab==="shoppinglist"){
+    if(currentTab==="home"){
+    document.querySelectorAll("[data-goto-tab]").forEach(el=>{
+      el.addEventListener("click", ()=>{
+        setCurrentTab(el.dataset.gotoTab);
+        render();
+      });
+    });
+  }
+
+  if(currentTab==="shoppinglist"){
     document.getElementById("shoppingStatusFilterSel").addEventListener("change", (e)=>{
       shoppingStatusFilter = e.target.value;
       render();
