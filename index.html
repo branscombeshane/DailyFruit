@@ -1517,8 +1517,10 @@ function hiddenCategorySet(){
   return new Set((DATA.categories||[]).filter(c=>c.hidden).map(c=>c.name));
 }
 
-// Add / rename / delete / hide a category. Each action saves itself immediately (like Item Setup's
-// delete-item button) rather than waiting for the page's "Save settings" button, since a rename or
+// Add / rename / delete / hide a category. Lives on Item Setup (see renderItemSetup) — that's where
+// categories actually get assigned to items, so managing the list itself belongs right alongside it,
+// rather than on Calculated Holdings where it used to sit. Each action saves itself immediately (like
+// the delete-item button on this same tab) rather than waiting for "Save changes", since a rename or
 // delete here also touches Item Setup and Base Product categories, not just this card.
 function renderManageCategories(){
   const cats = allCategoriesWithMeta();
@@ -2541,7 +2543,6 @@ function renderDashboard(){
         <div class="helptext" style="margin-top:10px;">Stock at or above this % of target counts as OK ("good until") instead of Consider Buying — defaults to 100%, meaning anything below target is Consider Buying. Lower it if being partway to target is still comfortably enough stock until the next delivery.</div>
       </div>
     </div>
-    ${renderManageCategories()}
     <div class="card">
       <div class="cardhead"><div><h3>Category safety buffers</h3><div class="desc">How much cushion to hold on top of average demand for each category. Leave blank to use the default above.</div></div></div>
       <div class="cardbody">
@@ -2623,6 +2624,7 @@ function renderItemSetup(){
         </div>
       </div>
     </div>
+    ${renderManageCategories()}
     <div class="card">
       <div class="cardhead">
         <div><h3>Items</h3><div class="desc">Edit the input columns, then Save changes once. Category applies to every variant of that Base Product. For a Product Mix (assembled from other stock, not bought directly), set Category to "Mixes" — Base Product, Procurement Unit and Qty per Unit don't apply and blank out automatically.</div></div>
@@ -3986,66 +3988,6 @@ function wireTabEvents(){
       });
       persist("Settings saved", ["procurementPlan","shoppingList","categoryBuffers","productCycles","productCeilings"]);
     });
-    // Manage categories: each action here saves itself immediately (like Item Setup's delete-item
-    // button) rather than waiting for "Save settings" above, since a rename or delete also touches
-    // Item Setup and Base Product categories, not just this card.
-    document.getElementById("addCategoryBtn").addEventListener("click", ()=>{
-      const nameInput = document.getElementById("newCategoryName");
-      const name = nameInput.value.trim();
-      if(!name){ toast("Enter a category name"); return; }
-      if(allCategoriesWithMeta().some(c=> c.name.toLowerCase()===name.toLowerCase())){ toast("That category already exists"); return; }
-      if(!DATA.categories) DATA.categories = [];
-      DATA.categories.push({name, hidden:false});
-      persist("Added category " + name, ["categories"]);
-    });
-    document.querySelectorAll("[data-cathidden-input]").forEach(inp=>{
-      inp.addEventListener("change", ()=>{
-        const name = inp.dataset.cathiddenInput;
-        if(!DATA.categories) DATA.categories = [];
-        let rec = DATA.categories.find(c=>c.name===name);
-        if(!rec){ rec = {name, hidden:false}; DATA.categories.push(rec); }
-        rec.hidden = inp.checked;
-        persist((inp.checked ? "Hid " + name + " from" : "Unhid " + name + " back into") + " Shopping List / Quick Buy", ["categories"]);
-      });
-    });
-    document.querySelectorAll("[data-catname-input]").forEach(inp=>{
-      inp.addEventListener("change", ()=>{
-        const oldName = inp.dataset.catnameInput;
-        const newName = inp.value.trim();
-        if(!newName || newName===oldName){ inp.value = oldName; return; }
-        if(allCategoriesWithMeta().some(c=> c.name!==oldName && c.name.toLowerCase()===newName.toLowerCase())){
-          toast("Another category is already named that");
-          inp.value = oldName;
-          return;
-        }
-        if(!DATA.categories) DATA.categories = [];
-        const rec = DATA.categories.find(c=>c.name===oldName);
-        if(rec) rec.name = newName;
-        else DATA.categories.push({name:newName, hidden:false});
-        DATA.itemSetup.forEach(it=>{ if(!it.baseProduct && it.category===oldName) it.category = newName; });
-        Object.keys(DATA.baseProductCategories).forEach(bp=>{
-          if(DATA.baseProductCategories[bp]===oldName) DATA.baseProductCategories[bp] = newName;
-        });
-        if(DATA.categoryBuffers[oldName]!==undefined){
-          DATA.categoryBuffers[newName] = DATA.categoryBuffers[oldName];
-          delete DATA.categoryBuffers[oldName];
-        }
-        persist("Renamed " + oldName + " to " + newName, ["categories","itemSetup","baseProductCategories","categoryBuffers"]);
-      });
-    });
-    document.querySelectorAll("[data-catdelete]").forEach(btn=>{
-      btn.addEventListener("click", ()=>{
-        const name = btn.dataset.catdelete;
-        if(!confirm(`Delete category "${name}"?\n\nEvery item currently in this category moves to Uncategorized. This saves immediately — it won't wait for Save settings.`)) return;
-        DATA.categories = (DATA.categories||[]).filter(c=>c.name!==name);
-        DATA.itemSetup.forEach(it=>{ if(!it.baseProduct && it.category===name) it.category = ""; });
-        Object.keys(DATA.baseProductCategories).forEach(bp=>{
-          if(DATA.baseProductCategories[bp]===name) delete DATA.baseProductCategories[bp];
-        });
-        delete DATA.categoryBuffers[name];
-        persist("Deleted category " + name, ["categories","itemSetup","baseProductCategories","categoryBuffers"]);
-      });
-    });
     document.getElementById("dashboardCategoryFilter").addEventListener("change", (e)=>{
       dashboardCategoryFilter = e.target.value;
       render();
@@ -4134,6 +4076,67 @@ function wireTabEvents(){
         if(!confirm(`Delete "${it.item}" from Item Setup?\n\nThis removes it immediately — it won't wait for Save changes. If it's still coming through in a Sales report, it'll just get added back automatically next time you upload one.`)) return;
         DATA.itemSetup.splice(idx,1);
         persist("Deleted " + it.item, ["itemSetup"]);
+      });
+    });
+    // Manage categories (moved here from Calculated Holdings — this is where categories actually get
+    // assigned to items, so managing the list itself belongs alongside it). Each action here saves
+    // itself immediately (like the delete-item button above) rather than waiting for "Save changes",
+    // since a rename or delete also touches Item Setup and Base Product categories, not just this card.
+    document.getElementById("addCategoryBtn").addEventListener("click", ()=>{
+      const nameInput = document.getElementById("newCategoryName");
+      const name = nameInput.value.trim();
+      if(!name){ toast("Enter a category name"); return; }
+      if(allCategoriesWithMeta().some(c=> c.name.toLowerCase()===name.toLowerCase())){ toast("That category already exists"); return; }
+      if(!DATA.categories) DATA.categories = [];
+      DATA.categories.push({name, hidden:false});
+      persist("Added category " + name, ["categories"]);
+    });
+    document.querySelectorAll("[data-cathidden-input]").forEach(inp=>{
+      inp.addEventListener("change", ()=>{
+        const name = inp.dataset.cathiddenInput;
+        if(!DATA.categories) DATA.categories = [];
+        let rec = DATA.categories.find(c=>c.name===name);
+        if(!rec){ rec = {name, hidden:false}; DATA.categories.push(rec); }
+        rec.hidden = inp.checked;
+        persist((inp.checked ? "Hid " + name + " from" : "Unhid " + name + " back into") + " Shopping List / Quick Buy", ["categories"]);
+      });
+    });
+    document.querySelectorAll("[data-catname-input]").forEach(inp=>{
+      inp.addEventListener("change", ()=>{
+        const oldName = inp.dataset.catnameInput;
+        const newName = inp.value.trim();
+        if(!newName || newName===oldName){ inp.value = oldName; return; }
+        if(allCategoriesWithMeta().some(c=> c.name!==oldName && c.name.toLowerCase()===newName.toLowerCase())){
+          toast("Another category is already named that");
+          inp.value = oldName;
+          return;
+        }
+        if(!DATA.categories) DATA.categories = [];
+        const rec = DATA.categories.find(c=>c.name===oldName);
+        if(rec) rec.name = newName;
+        else DATA.categories.push({name:newName, hidden:false});
+        DATA.itemSetup.forEach(it=>{ if(!it.baseProduct && it.category===oldName) it.category = newName; });
+        Object.keys(DATA.baseProductCategories).forEach(bp=>{
+          if(DATA.baseProductCategories[bp]===oldName) DATA.baseProductCategories[bp] = newName;
+        });
+        if(DATA.categoryBuffers[oldName]!==undefined){
+          DATA.categoryBuffers[newName] = DATA.categoryBuffers[oldName];
+          delete DATA.categoryBuffers[oldName];
+        }
+        persist("Renamed " + oldName + " to " + newName, ["categories","itemSetup","baseProductCategories","categoryBuffers"]);
+      });
+    });
+    document.querySelectorAll("[data-catdelete]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const name = btn.dataset.catdelete;
+        if(!confirm(`Delete category "${name}"?\n\nEvery item currently in this category moves to Uncategorized. This saves immediately — it won't wait for Save changes.`)) return;
+        DATA.categories = (DATA.categories||[]).filter(c=>c.name!==name);
+        DATA.itemSetup.forEach(it=>{ if(!it.baseProduct && it.category===name) it.category = ""; });
+        Object.keys(DATA.baseProductCategories).forEach(bp=>{
+          if(DATA.baseProductCategories[bp]===name) delete DATA.baseProductCategories[bp];
+        });
+        delete DATA.categoryBuffers[name];
+        persist("Deleted category " + name, ["categories","itemSetup","baseProductCategories","categoryBuffers"]);
       });
     });
   }
