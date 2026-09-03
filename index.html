@@ -1763,7 +1763,7 @@ function renderShoppingList(){
     <tr>
       <td>${esc(r.baseProduct)}</td>
       <td>${esc(r.category||"—")}</td>
-      <td>${shoppingStatusChip(r.status)}</td>
+      <td>${shoppingStatusChip(r.status)} ${stockPctBadge(r)}</td>
       <td class="num">${r.currentStock!==null ? fmtNum(r.currentStock) : "—"}</td>
       <td class="helptext">${esc(r.stockDate||"—")}</td>
       <td class="num">${r.recommended!==null ? fmtNum(r.recommended,0) : "—"}</td>
