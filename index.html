@@ -997,12 +997,38 @@ function recentPriceAlerts(days){
 // without needing its own entry. Recurses for a mix-of-mixes; `visiting` guards against a circular
 // mix reference. Returns null if the cost can't be fully determined (missing a base cost somewhere
 // in the chain), rather than silently under-costing the mix.
-function itemCostPerUnit(itemName, pm, visiting){
+//
+// `opts.latestPm`: a second-chance cost map, consulted only for a Product Mix's ingredients (once
+// recursion is inside a mix's ingredient list — see `insideComposite:true` on the recursive call below,
+// which also covers a nested mix-of-mixes) and only when `pm` (the primary/date-scoped map) doesn't
+// have that ingredient's base product at all — pm is always tried FIRST, so a genuinely same-day price
+// is still preferred over an older one when both exist. Product Mixes' own costing (compositeMixCosts
+// below) already passes a latestPurchaseCostMap()-based `pm` as the PRIMARY map and no `opts`, so it's
+// unaffected by any of this — it was always "latest-known" for every lookup. Sage CSV
+// (sageImportComputed) is the one caller that passes a date-scoped `pm` as primary plus `latestPm` as
+// the mix-ingredient fallback — Shane's report: a Product Mix like Fruit Salad has several ingredients
+// that are rarely all purchased on the very same day, so requiring every one of them to have a fresh
+// same-day cost meant the mix almost never priced at all in Sage CSV even though Product Mixes showed a
+// perfectly good cost for it. A non-mix item passed to this function directly still requires a same-day
+// cost, unchanged — only a Product Mix's ingredients get the latest-known fallback, and only for
+// whichever ingredients actually need it. `opts.usedFallback` (a {value:false} box, shared across the
+// whole recursion) is flipped to true the moment any leaf is priced from latestPm rather than pm, so the
+// caller can tell a "built on at least one older price" result apart from a fully fresh same-day one.
+function itemCostPerUnit(itemName, pm, visiting, opts){
   visiting = visiting || new Set();
+  opts = opts || {};
   if(visiting.has(itemName)) return null;
+  const latestPm = opts.latestPm;
+  const usedFallback = opts.usedFallback;
   const it = DATA.itemSetup.find(x=>x.item===itemName);
-  if(it && it.baseProduct && it.conversionFactor && it.baseProduct in pm){
-    return round2(Number(pm[it.baseProduct])/Number(it.conversionFactor));
+  if(it && it.baseProduct && it.conversionFactor){
+    if(it.baseProduct in pm){
+      return round2(Number(pm[it.baseProduct])/Number(it.conversionFactor));
+    }
+    if(opts.insideComposite && latestPm && it.baseProduct in latestPm){
+      if(usedFallback) usedFallback.value = true;
+      return round2(Number(latestPm[it.baseProduct])/Number(it.conversionFactor));
+    }
   }
   const lines = DATA.recipes.filter(r=> r.compositeItem===itemName && r.ingredientItem);
   if(!lines.length) return null;
@@ -1010,7 +1036,7 @@ function itemCostPerUnit(itemName, pm, visiting){
   let total = 0;
   for(const rec of lines){
     const factor = (rec.percent!==null && rec.percent!==undefined && rec.percent!=="") ? Number(rec.percent) : (Number(rec.fixedQty)||0);
-    const ingCost = itemCostPerUnit(rec.ingredientItem, pm, visiting);
+    const ingCost = itemCostPerUnit(rec.ingredientItem, pm, visiting, {latestPm, usedFallback, insideComposite:true});
     if(ingCost===null){ visiting.delete(itemName); return null; }
     total += factor*ingCost;
   }
@@ -1034,12 +1060,20 @@ function applyCostBuffers_(pm){
 function sageImportComputed(date){
   const derived = itemSetupDerived();
   const pm = applyCostBuffers_(purchaseCostMap(date));
+  // Fallback for a Product Mix's ingredients only (see itemCostPerUnit above) — a plain, non-mix item
+  // is unaffected and still needs a same-day purchase cost to price at all.
+  const latestPm = applyCostBuffers_(latestPurchaseCostMap());
   return derived.map(it=>{
-    const newCost = itemCostPerUnit(it.item, pm);
+    const usedFallback = {value:false};
+    const newCost = itemCostPerUnit(it.item, pm, undefined, {latestPm, usedFallback});
     return {
       itemCode: it.itemCode, averageCost: newCost,
       quantityOnHand: 0,
       item: it.item, baseProduct: it.baseProduct, purchasedOnDate: newCost !== null,
+      // true only for a Product Mix priced via at least one ingredient's latest-known cost rather than
+      // this exact date's — surfaced as a small note on the row so it's clear the figure isn't
+      // necessarily built from today's purchases, without hiding or excluding it either.
+      costFromLatest: newCost !== null && usedFallback.value,
     };
   });
 }
@@ -3000,7 +3034,7 @@ function renderSageImport(){
   const tableRows = rows.map(r=>`
     <tr>
       <td>${esc(r.itemCode)}</td>
-      <td class="num" style="font-weight:${r.purchasedOnDate?'600':'400'};">${r.averageCost!==null?money(r.averageCost):"—"}</td>
+      <td class="num" style="font-weight:${r.purchasedOnDate?'600':'400'};">${r.averageCost!==null?money(r.averageCost):"—"}${r.costFromLatest ? ` ${chip("latest known price","neutral")}` : ""}</td>
       <td class="num">${fmtNum(r.quantityOnHand)}</td>
       <td class="helptext">${esc(r.item)}</td>
     </tr>`).join("");
@@ -3010,7 +3044,7 @@ function renderSageImport(){
 
   return `
     <div class="pagehead">
-      <div><h2>Sage CSV</h2><p>Average Cost is pulled from Purchase Costs entries logged on the date selected below, once Receiving has confirmed them — an order still awaiting delivery (or invoice) won't show a cost here yet, so run this after Receiving is caught up for the day. Quantity On Hand is exported as 0. A Product Mix (composite) item's cost is built from its ingredients' costs on that same date instead — see Product Mixes for the full breakdown.</p></div>
+      <div><h2>Sage CSV</h2><p>Average Cost is pulled from Purchase Costs entries logged on the date selected below, once Receiving has confirmed them — an order still awaiting delivery (or invoice) won't show a cost here yet, so run this after Receiving is caught up for the day. Quantity On Hand is exported as 0. A Product Mix (composite) item's cost is built from its ingredients' costs instead — see Product Mixes for the full breakdown. Unlike a plain item, a mix doesn't need every one of its ingredients purchased on this exact date: it uses each ingredient's latest known cost (same as Product Mixes shows), tagged "latest known price" below whenever that's not this date's own figure, since a multi-ingredient mix is rarely bought whole in one day.</p></div>
       <div class="actions">
         <div class="field" style="min-width:170px;">
           <label>Purchase date</label>
