@@ -521,6 +521,10 @@ function newId(){ return Date.now().toString(36) + Math.random().toString(36).sl
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 function fmtNum(n, d){ if(n===null||n===undefined||n==="") return ""; d = d===undefined?2:d; return Number(n).toLocaleString(undefined,{minimumFractionDigits:d, maximumFractionDigits:d}); }
 function money(n){ return n===null||n===undefined||n==="" ? "" : "R"+fmtNum(n,2); }
+// HH:MM:SS (as stored) -> HH:MM for display — minute precision is plenty to find the right spot on a
+// camera system's timeline, and blank/missing (older rows, or a manually-dated batch entry with no real
+// receipt moment — see submitPurchaseBatch) is left as nothing rather than a misleading "00:00".
+function fmtTime(t){ return t ? String(t).slice(0,5) : ""; }
 
 // ---------- parsing helpers (mirrors the workbook's "CODE - Description - UNIT" convention) ----------
 function parseItem(item){
@@ -2190,7 +2194,7 @@ function renderReceiving(){
     return `
     <tr>
       <td>${esc(p.baseProduct)}</td>
-      <td class="helptext">${esc(p.date||"—")} → received ${esc(p.receivedDate||"—")}</td>
+      <td class="helptext">${esc(p.date||"—")} → received ${esc(p.receivedDate||"—")}${p.receivedTime ? " at " + esc(fmtTime(p.receivedTime)) : ""}</td>
       <td>${purchaseLineChip(p)} ${discFlag} ${noOrderFlag}</td>
       <td>${esc(p.receivedBy||"—")}</td>
       <td>${manage ? `<button class="btn small" data-receive-edit="${esc(p.id||"")}">${editing?"Cancel":"Correct"}</button>${editForm}` : ""}</td>
@@ -2343,7 +2347,7 @@ function renderHomeDashboard(){
   const discrepancyHtml = discrepancyRows.slice(0,10).map(p=>`
     <tr>
       <td>${esc(p.baseProduct)}</td>
-      <td class="helptext">received ${esc(p.receivedDate||"—")}</td>
+      <td class="helptext">received ${esc(p.receivedDate||"—")}${p.receivedTime ? " at " + esc(fmtTime(p.receivedTime)) : ""}</td>
       <td>${discrepancyChipHtml(p)}</td>
     </tr>`).join("");
 
@@ -2855,7 +2859,7 @@ function renderPurchase(){
         <td>${found?statusChip("OK"):statusChip("NOT FOUND")}</td>
         <td class="num">${count}</td>
         <td class="helptext">${esc(p.loggedBy||"—")}</td>
-        <td class="helptext">${esc(notReceived ? (p.notReceivedBy||"—") : (p.receivedBy||"—"))}</td>
+        <td class="helptext">${esc(notReceived ? (p.notReceivedBy||"—") : (p.receivedBy||"—"))}${(!notReceived && p.receivedTime) ? " " + esc(fmtTime(p.receivedTime)) : ""}</td>
         <td><button class="delbtn" data-del-purchase="${i}" title="Remove row">✕</button></td>
       </tr>`;
     }).join("");
@@ -3482,6 +3486,14 @@ function wireTabEvents(){
           entry.receivedCost = existingRow.receivedCost;
           entry.receivedBy = existingRow.receivedBy;
           entry.receivedDate = existingRow.receivedDate;
+          entry.receivedTime = existingRow.receivedTime;
+        }
+        // a "not received" line being corrected here (its qty/cost typo'd at order time) must keep that
+        // status too — logPurchase's full-row overwrite would otherwise silently reopen it
+        if(existingRow && existingRow.notReceivedDate){
+          entry.notReceivedReason = existingRow.notReceivedReason;
+          entry.notReceivedBy = existingRow.notReceivedBy;
+          entry.notReceivedDate = existingRow.notReceivedDate;
         }
         DATA.purchaseCosts.push(entry);
         shoppingBuyEditing.delete(bp);
@@ -3664,6 +3676,14 @@ function wireTabEvents(){
             entry.receivedCost = existingRow.receivedCost;
             entry.receivedBy = existingRow.receivedBy;
             entry.receivedDate = existingRow.receivedDate;
+            entry.receivedTime = existingRow.receivedTime;
+          }
+          // a "not received" line being corrected here must keep that status too — see the matching
+          // comment on the Shopping List edit path above
+          if(existingRow && existingRow.notReceivedDate){
+            entry.notReceivedReason = existingRow.notReceivedReason;
+            entry.notReceivedBy = existingRow.notReceivedBy;
+            entry.notReceivedDate = existingRow.notReceivedDate;
           }
           DATA.purchaseCosts.push(entry);
           quickBuySelected = null;
@@ -3824,6 +3844,11 @@ function wireTabEvents(){
         if(costVal!==""){ existing.receivedCost = Number(costVal); } else { delete existing.receivedCost; }
         if(currentUser) existing.receivedBy = currentUser.name;
         existing.receivedDate = existing.receivedDate || new Date().toISOString().slice(0,10);
+        // Shane's ask: a discrepancy needs a clock time to check against the camera system, not just a
+        // date — captured once, at the moment delivery is FIRST confirmed (same preserve-on-correction
+        // pattern as receivedDate above), so a later price/qty correction never overwrites the time the
+        // stock actually arrived. Local (device) clock time, since that's what lines up with the cameras.
+        existing.receivedTime = existing.receivedTime || new Date().toTimeString().slice(0,8);
         receivingEditing.delete(id);
         // additive on the backend (touches only this one row, by its own id) — see receivePurchase in
         // Code.gs, which merges these fields onto the existing order rather than overwriting the row,
@@ -3831,7 +3856,7 @@ function wireTabEvents(){
         persistPurchaseAction({
           action:"receivePurchase", id,
           receivedQty: existing.receivedQty, receivedCost: existing.receivedCost,
-          receivedBy: existing.receivedBy, receivedDate: existing.receivedDate,
+          receivedBy: existing.receivedBy, receivedDate: existing.receivedDate, receivedTime: existing.receivedTime,
         }, "Marked " + existing.baseProduct + " as received");
       });
     });
@@ -3915,7 +3940,7 @@ function wireTabEvents(){
         // all already treat a missing qty as "no order figure on file" rather than a discrepancy, and the
         // Receiving list flags it with a "no order on file" chip so it stays visible that this one
         // skipped the usual Order -> Received flow.
-        const entry = {id:newId(), date:today, baseProduct:bp, receivedQty:Number(qtyVal), receivedDate:today};
+        const entry = {id:newId(), date:today, baseProduct:bp, receivedQty:Number(qtyVal), receivedDate:today, receivedTime:new Date().toTimeString().slice(0,8)};
         if(costVal!==""){ entry.receivedCost = Number(costVal); }
         if(supplierVal) entry.supplier = supplierVal;
         if(currentUser){ entry.loggedBy = currentUser.name; entry.receivedBy = currentUser.name; }
