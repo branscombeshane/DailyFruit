@@ -250,7 +250,6 @@
     .print-slip table{ width:100%; border-collapse:collapse; font-size:13px; }
     .print-slip td{ padding:5px 0; border-bottom:1px solid #ddd; vertical-align:top; }
     .print-slip td:first-child{ color:#555; width:42%; }
-    .print-slip .print-slip-total td{ border-bottom:none; border-top:2px solid #111; font-weight:700; padding-top:8px; }
     .print-slip .print-slip-disc{ margin-top:12px; padding:8px 10px; border:1px solid #111; font-size:12px; font-weight:700; }
     .print-slip .print-slip-foot{ margin-top:18px; font-size:11px; color:#777; }
   }
@@ -2209,9 +2208,6 @@ function discrepancyChipHtml(p){
 function renderReceivingSlipHtml(p){
   const disc = receivingDiscrepancy(p);
   const hasOrderedQty = p.qty!==undefined && p.qty!==null && p.qty!=="";
-  const hasOrderedCost = p.cost!==undefined && p.cost!==null && p.cost!=="";
-  const hasCost = p.receivedCost!==undefined && p.receivedCost!==null && p.receivedCost!=="";
-  const total = hasCost ? Number(p.receivedQty) * Number(p.receivedCost) : null;
   return `
     <div class="print-slip">
       <h2>Daily Fruit</h2>
@@ -2223,17 +2219,11 @@ function renderReceivingSlipHtml(p){
         <tr><td>Ordered by</td><td>${esc(p.loggedBy||"—")}</td></tr>
         <tr><td>Order date</td><td>${esc(p.date||"—")}</td></tr>
         <tr><td>Ordered qty</td><td>${hasOrderedQty ? fmtNum(p.qty) : "—"}</td></tr>
-        <tr><td>Ordered cost/unit</td><td>${hasOrderedCost ? money(p.cost) : "—"}</td></tr>
         <tr><td>Received qty</td><td>${fmtNum(p.receivedQty)}</td></tr>
-        <tr><td>Received cost/unit</td><td>${hasCost ? money(p.receivedCost) : "not recorded"}</td></tr>
-        <tr class="print-slip-total"><td>Total</td><td>${total!==null ? money(total) : "—"}</td></tr>
         <tr><td>Received by</td><td>${esc(p.receivedBy||"—")}</td></tr>
         <tr><td>Received on</td><td>${esc(p.receivedDate||"—")}${p.receivedTime ? " at " + esc(fmtTime(p.receivedTime)) : ""}</td></tr>
       </table>
-      ${disc ? `<div class="print-slip-disc">⚠ Discrepancy — ${[
-        disc.qtyDiff ? `qty ordered ${fmtNum(p.qty)}, received ${fmtNum(p.receivedQty)}` : null,
-        disc.costDiff ? `cost ordered ${money(p.cost)}, received ${money(p.receivedCost)}` : null,
-      ].filter(Boolean).join("; ")}</div>` : ""}
+      ${disc && disc.qtyDiff ? `<div class="print-slip-disc">⚠ Discrepancy — qty ordered ${fmtNum(p.qty)}, received ${fmtNum(p.receivedQty)}</div>` : ""}
       <div class="print-slip-foot">Printed ${esc(new Date().toLocaleString())}${currentUser ? " by " + esc(currentUser.name) : ""}</div>
     </div>`;
 }
