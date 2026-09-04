@@ -484,22 +484,49 @@ const ROLE_TABS = {
 // Tabs where a background data refresh can safely swap DATA and re-render without ever wiping typing
 // that's only ever lived in the DOM: Shopping List, Quick Buy and the Shopping List Archive have
 // nothing that survives solely as an uncommitted input value — and neither does "home" (the landing
-// Dashboard), which is pure summary with no inputs of its own at all, just links into other tabs. Every
-// other tab turned out to have at least one uncommitted input — including ones that look read-only at a
-// glance: the "dashboard" tab id (Calculated Holdings — not to be confused with the "home" landing
-// Dashboard above) doubles as its settings screen (cover/buffer/threshold inputs, a "Save settings"
-// button), Sage CSV carries the category wastage-buffer table added earlier, and Receiving's
-// pending-delivery rows carry their own received-qty/received-cost inputs — so all three get the banner
-// instead, same as the genuinely edit-heavy tabs (Item Setup, Recipes, Item Sales, Purchase, Stock Take,
-// Users, Backup).
-const SAFE_AUTO_REFRESH_TABS = new Set(["home","shoppinglist","quickbuy","shoppingarchive"]);
+// Dashboard), which is pure summary with no inputs of its own at all, just links into other tabs.
+// Receiving and Purchase (added later, see hasUnsavedInlineEdit below) both DO have uncommitted-input
+// risk — Receiving's pending-delivery rows carry their own received-qty/received-cost inputs with no
+// edit-mode toggle, and Purchase's "add a line" compose fields aren't tracked in JS state either — but
+// unlike the tabs excluded below, exactly which inputs matter is a short, fixed list that's cheap to
+// check directly, so hasUnsavedInlineEdit() does that instead of blanket-excluding either tab; a refresh
+// is deferred only while one of those specific fields actually has something typed into it, not just
+// because the tab happens to have inputs at all. Every OTHER tab still gets the banner instead: the
+// "dashboard" tab id (Calculated Holdings — not to be confused with the "home" landing Dashboard above)
+// doubles as its settings screen (cover/buffer/threshold inputs, a "Save settings" button) and Sage CSV
+// carries the category wastage-buffer table added earlier — both have enough scattered, easy-to-add-to
+// inputs that the same one-by-one check isn't worth it — same as the genuinely edit-heavy tabs (Item
+// Setup, Recipes, Item Sales, Stock Take, Users, Backup).
+const SAFE_AUTO_REFRESH_TABS = new Set(["home","shoppinglist","quickbuy","shoppingarchive","receiving","purchase"]);
 
-// Shopping List and Quick Buy DO have their own inline forms (buy/unable-to-purchase entry) even
-// though they're in the safe set above — those live as open Map/Set state plus typed-but-unsubmitted
-// DOM input values, so a silent refresh while one is open is deferred (the next poll will just try
-// again) rather than risking wiping someone's half-entered purchase.
+// Shopping List and Quick Buy have their own inline forms (buy/unable-to-purchase entry) tracked as open
+// Map/Set state; Receiving and Purchase mix that (receivingEditing/receivingNotReceivedEditing,
+// purchaseDraftLines) with a few specific DOM inputs that were never wired to a JS variable at all (see
+// the comment on SAFE_AUTO_REFRESH_TABS above) — checked directly by id/class since there's nowhere else
+// their live value exists. A silent refresh is deferred whenever any of this is true; the next poll just
+// tries again.
 function hasUnsavedInlineEdit(){
-  return shoppingBuyEditing.size > 0 || shoppingIssueEditing.size > 0 || quickBuySelected !== null;
+  if(shoppingBuyEditing.size > 0 || shoppingIssueEditing.size > 0 || quickBuySelected !== null) return true;
+  if(currentTab==="receiving"){
+    if(receivingEditing.size > 0 || receivingNotReceivedEditing.size > 0) return true;
+    // .receive-qty and .notreceived-reason always start empty (no pre-fill), so any value at all means
+    // someone typed it. .receive-cost on a pending row is different — it's pre-filled with the ordered
+    // cost as a suggestion (data-default), so a silent refresh re-rendering it would produce that exact
+    // same value right back; only a value that DIFFERS from the pre-filled default is an actual edit
+    // worth protecting. Without this, any pending order with a known cost would permanently block the
+    // silent refresh on this tab even when nobody's touched anything.
+    for(const el of document.querySelectorAll(".receive-qty, .notreceived-reason")){ if(el.value !== "") return true; }
+    for(const el of document.querySelectorAll(".receive-cost")){ if(el.value !== (el.dataset.default||"")) return true; }
+  }
+  if(currentTab==="purchase"){
+    if(purchaseDraftLines.length > 0) return true;
+    const draftFieldIds = ["draftLineBase","draftLineQty","draftLineCost","draftLineSupplier"];
+    for(const id of draftFieldIds){
+      const el = document.getElementById(id);
+      if(el && el.value !== "") return true;
+    }
+  }
+  return false;
 }
 function roleCanAccessTab(role, tabId){
   return (ROLE_TABS[role]||[]).includes(tabId);
@@ -2161,7 +2188,7 @@ function renderReceiving(){
     const notReceivedForm = manage ? `
       <div class="buyrow" data-receive-row="${esc(p.id||"")}" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
         <input type="number" step="0.01" class="receive-qty" placeholder="Count qty" value="" style="width:80px;">
-        <input type="number" step="0.01" class="receive-cost" placeholder="Cost/u" value="${esc(hasCost?p.cost:"")}" style="width:80px;">
+        <input type="number" step="0.01" class="receive-cost" placeholder="Cost/u" value="${esc(hasCost?p.cost:"")}" data-default="${esc(hasCost?p.cost:"")}" style="width:80px;">
         <button class="btn primary" data-receive-tick="${esc(p.id||"")}" title="Confirm received" style="padding:2px 10px;font-size:12px;">✓ Received</button>
         ${notReceivedOpen ? "" : `<button class="btn" data-notreceived-addnew="${esc(p.id||"")}" style="padding:2px 10px;font-size:12px;">✕ Not received</button>`}
       </div>
@@ -4635,7 +4662,10 @@ function showStaleDataBanner(){
   staleDataAvailable = true;
   if(saveConflict) return; // the save-conflict banner already covers "something needs your attention"; don't stack a second one on top
   const main = document.getElementById("main");
-  if(!main || document.getElementById("staleDataReload")) return; // already showing
+  if(!main || document.getElementById("staleDataReload")) return; // already showing — and already toasted once, don't repeat every poll
+  // A banner alone is easy to miss while heads-down typing — Shane's report. The toast is what actually
+  // gets noticed; it fires exactly once per staleness episode thanks to the DOM-existence check above.
+  toast("Updated data is available — reload when you can");
   main.insertAdjacentHTML("afterbegin", renderStaleDataBanner());
   const btn = document.getElementById("staleDataReload");
   if(btn) btn.addEventListener("click", ()=> location.reload());
@@ -4668,7 +4698,10 @@ boot();
 // Registered once at script load, not inside boot() — boot() can re-run (the "Try again" button on a
 // failed load calls it again), and checkForUpdates() is already a no-op until dataLoaded/currentUser
 // are set, so there's no need to guard against double-registration here.
-const DATA_POLL_INTERVAL_MS = 90000; // 90s — frequent enough to catch a returning user quickly, cheap enough (one tiny GET) not to matter at any real scale
+// 20s (previously 90s — Shane's report: staleness between users was noticeable and lingered too long).
+// The poll itself is a single PropertiesService read on the backend (see doGet's "version" branch in
+// Code.gs), no Sheet I/O at all, so even a handful of people all polling every 20s is negligible load.
+const DATA_POLL_INTERVAL_MS = 20000;
 wireActivityTracking();
 setInterval(()=>{ checkIdleLogout(); checkForUpdates(); }, DATA_POLL_INTERVAL_MS);
 document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState === "visible"){ checkIdleLogout(); checkForUpdates(); } });
