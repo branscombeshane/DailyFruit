@@ -540,6 +540,12 @@ function canManagePurchases(){
 function canManageReceiving(){
   return !!currentUser && (currentUser.role==="owner" || currentUser.role==="receiving" || currentUser.role==="procurement");
 }
+// Deleting a confirmed "Recently received" line outright (as opposed to correcting its qty/cost, which
+// any receiving-capable role can already do) is a step further than a routine count correction — Shane's
+// call: only Owner should be able to remove one entirely. See renderReceiving()'s receivedRows.
+function isOwner(){
+  return !!currentUser && currentUser.role==="owner";
+}
 
 function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
 // A short, good-enough-for-this-app unique id for a purchase line (or any other row that needs one to
@@ -2235,13 +2241,17 @@ function renderReceiving(){
         <button class="btn primary" data-receive-tick="${esc(p.id||"")}" title="Save correction" style="padding:2px 10px;font-size:12px;">✓ Save</button>
         <button class="btn" data-receive-edit-cancel="${esc(p.id||"")}" style="padding:2px 6px;font-size:12px;">✕</button>
       </div>` : "";
+    // Deleting the row outright (vs. correcting its qty/cost via editForm above) is Owner-only — Shane's
+    // call, since it removes the record entirely rather than fixing a miscount, and it's used elsewhere
+    // (Purchase Costs, Sage CSV) as the received figures.
+    const deleteBtn = isOwner() ? `<button class="btn small" data-del-received="${esc(p.id||"")}" title="Delete this received entry" style="color:var(--critical);">✕ Delete</button>` : "";
     return `
     <tr>
       <td>${esc(p.baseProduct)}</td>
       <td class="helptext">${esc(p.date||"—")} → received ${esc(p.receivedDate||"—")}${p.receivedTime ? " at " + esc(fmtTime(p.receivedTime)) : ""}</td>
       <td>${purchaseLineChip(p)} ${discFlag} ${noOrderFlag}</td>
       <td>${esc(p.receivedBy||"—")}</td>
-      <td>${manage ? `<button class="btn small" data-receive-edit="${esc(p.id||"")}">${editing?"Cancel":"Correct"}</button>${editForm}` : ""}</td>
+      <td>${manage ? `<button class="btn small" data-receive-edit="${esc(p.id||"")}">${editing?"Cancel":"Correct"}</button>${editForm}` : ""} ${deleteBtn}</td>
     </tr>`;
   }).join("");
 
@@ -3974,6 +3984,20 @@ function wireTabEvents(){
       btn.addEventListener("click", ()=>{
         receivingEditing.delete(btn.dataset.receiveEditCancel);
         render();
+      });
+    });
+    // Owner-only (gated at render time in renderReceiving — isOwner()): removes a "Recently received"
+    // line entirely, not just correcting its qty/cost. Reuses the same deletePurchaseLog action Purchase
+    // Costs' row delete already uses on the backend — it removes exactly one purchaseCosts row by its own
+    // id, whatever state (pending/received/not received) it's in, so no backend change was needed here.
+    document.querySelectorAll("[data-del-received]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const id = btn.dataset.delReceived;
+        const existing = DATA.purchaseCosts.find(p=> p.id===id);
+        if(!existing){ toast("That entry no longer exists"); return; }
+        if(!confirm(`Delete this received entry for "${existing.baseProduct}"?\n\nThis removes the record entirely — it also feeds Purchase Costs and Sage CSV, so this can't be undone.`)) return;
+        DATA.purchaseCosts = DATA.purchaseCosts.filter(p=> p.id!==id);
+        persistPurchaseAction({action:"deletePurchaseLog", id}, "Deleted received entry for " + existing.baseProduct);
       });
     });
     const directReceiptBtn = document.getElementById("logDirectReceipt");
