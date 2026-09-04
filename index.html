@@ -235,6 +235,25 @@
     .navbtn{white-space:nowrap;}
     .main{padding:18px;}
   }
+
+  /* Receiving's printable goods-received slip (see printReceivingSlip / renderReceivingSlipHtml). Fixed
+     black-on-white colors on purpose, not the theme tokens above — dark mode is for the screen, never
+     for paper. Hidden on screen; @media print flips it to the only thing that prints, so the app chrome
+     (sidebar, nav, whatever tab happens to be open) never ends up on the page. */
+  .print-slip-area{ display:none; }
+  @media print{
+    body > .app, body > .toast{ display:none !important; }
+    .print-slip-area{ display:block !important; background:#fff; color:#111; padding:24px; font-family:Arial,Helvetica,sans-serif; }
+    .print-slip{ max-width:420px; margin:0 auto; }
+    .print-slip h2{ margin:0 0 2px; font-size:20px; }
+    .print-slip .print-slip-sub{ color:#555; font-size:12px; margin-bottom:14px; }
+    .print-slip table{ width:100%; border-collapse:collapse; font-size:13px; }
+    .print-slip td{ padding:5px 0; border-bottom:1px solid #ddd; vertical-align:top; }
+    .print-slip td:first-child{ color:#555; width:42%; }
+    .print-slip .print-slip-total td{ border-bottom:none; border-top:2px solid #111; font-weight:700; padding-top:8px; }
+    .print-slip .print-slip-disc{ margin-top:12px; padding:8px 10px; border:1px solid #111; font-size:12px; font-weight:700; }
+    .print-slip .print-slip-foot{ margin-top:18px; font-size:11px; color:#777; }
+  }
 </style>
 </head>
 <body>
@@ -254,6 +273,7 @@
   <main class="main" id="main"></main>
 </div>
 <div class="toast" id="toast"></div>
+<div class="print-slip-area" id="printSlipArea" aria-hidden="true"></div>
 
 <script>
 // Where the shared data actually lives now: a Google Apps Script Web App backed by a Google
@@ -365,6 +385,12 @@ try{
 // re-render doesn't make them retype their name too.
 let loginNameInput = "";
 let loginError = "";
+// True only while doLogin's freshness check (see wireLoginEvents) is in flight — a tab left sitting on
+// the login screen doesn't poll for updates at all (checkForUpdates() is a no-op with no currentUser),
+// so without this a login screen open for hours could hand someone data from whenever the page first
+// loaded. Brief enough in the common case (page just opened, data's already current) that it's barely
+// visible, but real when a device's been idle a while.
+let loginBusy = false;
 let currentTab = "home";
 try{
   const savedTab = localStorage.getItem("dailyFruitCurrentTab");
@@ -971,6 +997,20 @@ function receivingDiscrepancy(p){
   return {qtyDiff, costDiff};
 }
 
+// Prints a physical goods-received slip for one confirmed delivery — Shane's ask. Looks the record up
+// fresh by id (rather than taking a reference) so this works identically whether it's called right after
+// a confirm (see data-receive-tick) or later from the "🖨 Print slip" button on an already-received row.
+// Populates the normally-hidden #printSlipArea and calls window.print(); the @media print CSS on
+// .print-slip-area hides the rest of the app so only the slip itself ends up on paper.
+function printReceivingSlip(id){
+  const p = DATA.purchaseCosts.find(x=> x.id===id);
+  if(!p){ toast("That entry no longer exists"); return; }
+  const area = document.getElementById("printSlipArea");
+  if(!area) return;
+  area.innerHTML = renderReceivingSlipHtml(p);
+  window.print();
+}
+
 // The always-current cost per base product — a weighted average across every line sharing the MOST
 // RECENT date logged for that base product (previously just grabbed whichever single row was logged
 // last; multiple suppliers on the same day needs a genuine weighted average instead of picking one
@@ -1307,12 +1347,29 @@ function renderNav(){
 function wireLoginEvents(){
   const nameEl = document.getElementById("loginName");
   if(nameEl) nameEl.addEventListener("input", (e)=>{ loginNameInput = e.target.value; });
-  const doLogin = ()=>{
+  const doLogin = async ()=>{
+    if(loginBusy) return;
     const name = (document.getElementById("loginName")||{}).value || "";
     const pin = (document.getElementById("loginPin")||{}).value || "";
     loginNameInput = name;
     const trimmedName = name.trim();
     if(!trimmedName){ loginError = "Enter your name"; render(); return; }
+    // A cheap version check first (the same single-Properties-read endpoint checkForUpdates() polls) —
+    // this tab may have been sitting on the login screen a good while (a shared kitchen device left open
+    // overnight, say) with nobody logged in to trigger the usual background poll. Refetches full data
+    // only when something's actually changed, so logging in right after opening the app — the common
+    // case, already current — stays effectively instant.
+    loginBusy = true; loginError = ""; render();
+    try{
+      const res = await fetch(API_URL + "?action=version", {cache:"no-store"});
+      const result = res.ok ? await res.json() : null;
+      const serverVersion = (result && result.ok) ? (result.dataVersion || null) : undefined;
+      if(serverVersion !== undefined && serverVersion !== (DATA.dataVersion || null)){
+        DATA = await loadData();
+        lastKnownDataVersion = DATA.dataVersion || null;
+      }
+    }catch(e){ /* offline / a blip — fall back to whatever's already loaded rather than blocking login */ }
+    loginBusy = false;
     const u = (DATA.users||[]).find(x=> String(x.name).toLowerCase() === trimmedName.toLowerCase());
     if(!u){ loginError = "Name not recognized"; render(); return; }
     if(String(u.pin) !== String(pin)){ loginError = "Incorrect PIN"; render(); return; }
@@ -1498,12 +1555,12 @@ function renderLogin(){
         <div class="loginmark">DF</div>
         <h2>Daily Fruit</h2>
         <p class="helptext">Enter your name and PIN to log in.</p>
-        <input type="text" id="loginName" placeholder="Name" autocomplete="off" autofocus
+        <input type="text" id="loginName" placeholder="Name" autocomplete="off" autofocus ${loginBusy?"disabled":""}
           value="${esc(loginNameInput)}" style="font-size:16px;padding:13px;margin-top:14px;">
-        <input type="password" inputmode="numeric" pattern="[0-9]*" id="loginPin" placeholder="PIN"
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="loginPin" placeholder="PIN" ${loginBusy?"disabled":""}
           style="font-size:22px;padding:14px;letter-spacing:6px;margin-top:10px;">
         ${loginError ? `<div class="helptext" style="color:var(--critical);margin-top:8px;">${esc(loginError)}</div>` : ""}
-        <button class="btn primary" id="loginSubmit" style="width:100%;margin-top:14px;padding:13px;font-size:15px;">Log in</button>
+        <button class="btn primary" id="loginSubmit" ${loginBusy?"disabled":""} style="width:100%;margin-top:14px;padding:13px;font-size:15px;">${loginBusy?"Checking for updates…":"Log in"}</button>
       </div>
     </div>`;
 }
@@ -2143,6 +2200,43 @@ function discrepancyChipHtml(p){
     disc.costDiff ? `cost differs (ordered ${money(p.cost)}, received ${money(p.receivedCost)})` : null,
   ].filter(Boolean).join(", "), "warn");
 }
+
+// A printable paper record of one confirmed delivery — Shane's ask, so there's something physical to
+// keep with the stock or hand to whoever checks it in. Plain black-on-white, deliberately independent
+// of the app's own light/dark theme (see the .print-slip-area CSS). Shows the ordered figures too, even
+// though the on-screen count flow hides them on purpose (to stop a rubber-stamped count) — once the
+// delivery is confirmed, seeing what was ordered next to what arrived is exactly the point of the slip.
+function renderReceivingSlipHtml(p){
+  const disc = receivingDiscrepancy(p);
+  const hasOrderedQty = p.qty!==undefined && p.qty!==null && p.qty!=="";
+  const hasOrderedCost = p.cost!==undefined && p.cost!==null && p.cost!=="";
+  const hasCost = p.receivedCost!==undefined && p.receivedCost!==null && p.receivedCost!=="";
+  const total = hasCost ? Number(p.receivedQty) * Number(p.receivedCost) : null;
+  return `
+    <div class="print-slip">
+      <h2>Daily Fruit</h2>
+      <div class="print-slip-sub">Goods Received Slip</div>
+      <table>
+        <tr><td>Base product</td><td>${esc(p.baseProduct)}</td></tr>
+        <tr><td>Category</td><td>${esc(categoryFor(p.baseProduct)||"—")}</td></tr>
+        <tr><td>Supplier</td><td>${esc(p.supplier||"—")}</td></tr>
+        <tr><td>Ordered by</td><td>${esc(p.loggedBy||"—")}</td></tr>
+        <tr><td>Order date</td><td>${esc(p.date||"—")}</td></tr>
+        <tr><td>Ordered qty</td><td>${hasOrderedQty ? fmtNum(p.qty) : "—"}</td></tr>
+        <tr><td>Ordered cost/unit</td><td>${hasOrderedCost ? money(p.cost) : "—"}</td></tr>
+        <tr><td>Received qty</td><td>${fmtNum(p.receivedQty)}</td></tr>
+        <tr><td>Received cost/unit</td><td>${hasCost ? money(p.receivedCost) : "not recorded"}</td></tr>
+        <tr class="print-slip-total"><td>Total</td><td>${total!==null ? money(total) : "—"}</td></tr>
+        <tr><td>Received by</td><td>${esc(p.receivedBy||"—")}</td></tr>
+        <tr><td>Received on</td><td>${esc(p.receivedDate||"—")}${p.receivedTime ? " at " + esc(fmtTime(p.receivedTime)) : ""}</td></tr>
+      </table>
+      ${disc ? `<div class="print-slip-disc">⚠ Discrepancy — ${[
+        disc.qtyDiff ? `qty ordered ${fmtNum(p.qty)}, received ${fmtNum(p.receivedQty)}` : null,
+        disc.costDiff ? `cost ordered ${money(p.cost)}, received ${money(p.receivedCost)}` : null,
+      ].filter(Boolean).join("; ")}</div>` : ""}
+      <div class="print-slip-foot">Printed ${esc(new Date().toLocaleString())}${currentUser ? " by " + esc(currentUser.name) : ""}</div>
+    </div>`;
+}
 function renderReceiving(){
   const manage = canManageReceiving();
   const todayStr = new Date().toISOString().slice(0,10);
@@ -2245,13 +2339,14 @@ function renderReceiving(){
     // call, since it removes the record entirely rather than fixing a miscount, and it's used elsewhere
     // (Purchase Costs, Sage CSV) as the received figures.
     const deleteBtn = isOwner() ? `<button class="btn small" data-del-received="${esc(p.id||"")}" title="Delete this received entry" style="color:var(--critical);">✕ Delete</button>` : "";
+    const printBtn = `<button class="btn small" data-print-slip="${esc(p.id||"")}" title="Print a goods-received slip for this delivery">🖨 Print slip</button>`;
     return `
     <tr>
       <td>${esc(p.baseProduct)}</td>
       <td class="helptext">${esc(p.date||"—")} → received ${esc(p.receivedDate||"—")}${p.receivedTime ? " at " + esc(fmtTime(p.receivedTime)) : ""}</td>
       <td>${purchaseLineChip(p)} ${discFlag} ${noOrderFlag}</td>
       <td>${esc(p.receivedBy||"—")}</td>
-      <td>${manage ? `<button class="btn small" data-receive-edit="${esc(p.id||"")}">${editing?"Cancel":"Correct"}</button>${editForm}` : ""} ${deleteBtn}</td>
+      <td>${manage ? `<button class="btn small" data-receive-edit="${esc(p.id||"")}">${editing?"Cancel":"Correct"}</button>${editForm}` : ""} ${printBtn} ${deleteBtn}</td>
     </tr>`;
   }).join("");
 
@@ -3901,6 +3996,9 @@ function wireTabEvents(){
         if(!qtyVal){ toast("Enter the quantity actually received"); return; }
         const existing = DATA.purchaseCosts.find(p=> p.id===id);
         if(!existing){ toast("That order no longer exists"); return; }
+        // Captured before the mutations below — tells the auto-print at the bottom apart from a later
+        // qty/cost correction on an already-received line (see printReceivingSlip call).
+        const wasAlreadyReceived = isReceived(existing);
         existing.receivedQty = Number(qtyVal);
         if(costVal!==""){ existing.receivedCost = Number(costVal); } else { delete existing.receivedCost; }
         if(currentUser) existing.receivedBy = currentUser.name;
@@ -3919,6 +4017,11 @@ function wireTabEvents(){
           receivedQty: existing.receivedQty, receivedCost: existing.receivedCost,
           receivedBy: existing.receivedBy, receivedDate: existing.receivedDate, receivedTime: existing.receivedTime,
         }, "Marked " + existing.baseProduct + " as received");
+        // Auto-print, but only on the delivery's FIRST confirmation — not on a later correction to an
+        // already-received line (that's what the row's own "🖨 Print slip" button is for, on demand).
+        // Printed synchronously here, before the save round-trip above resolves, so the paper slip
+        // reflects the physical count immediately rather than waiting on network timing.
+        if(!wasAlreadyReceived) printReceivingSlip(id);
       });
     });
     // "Not received" on a still-pending order — the other resolution besides actually confirming
@@ -4000,6 +4103,13 @@ function wireTabEvents(){
         persistPurchaseAction({action:"deletePurchaseLog", id}, "Deleted received entry for " + existing.baseProduct);
       });
     });
+    // Manual reprint — available any time from a "Recently received" row, on top of the auto-print that
+    // fires right when a delivery is first confirmed (see data-receive-tick below).
+    document.querySelectorAll("[data-print-slip]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        printReceivingSlip(btn.dataset.printSlip);
+      });
+    });
     const directReceiptBtn = document.getElementById("logDirectReceipt");
     if(directReceiptBtn){
       directReceiptBtn.addEventListener("click", ()=>{
@@ -4023,6 +4133,9 @@ function wireTabEvents(){
         DATA.purchaseIssues = DATA.purchaseIssues.filter(p=> !(p.baseProduct===bp && p.date===today));
         DATA.purchaseCosts.push(entry);
         persistPurchaseAction({action:"logPurchase", entry}, "Logged " + qtyVal + " " + bp + " received (no order on file)");
+        // Also a delivery being confirmed for the first time (just without a prior order on file) — same
+        // auto-print as the normal Pending delivery -> Received flow above.
+        printReceivingSlip(entry.id);
       });
     }
   }
