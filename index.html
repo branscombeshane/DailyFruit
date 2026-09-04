@@ -405,6 +405,7 @@ let shoppingArchiveDate = "";
 let shoppingArchiveRows = null;
 let shoppingArchiveError = "";
 let shoppingArchivePending = null; // date currently being fetched, if any — guards against firing the same fetch twice
+let shoppingArchiveSearch = ""; // filters the picked date's table by base product — see renderShoppingArchive()
 let quickBuySearch = "";
 let quickBuyCategoryFilter = "";
 let quickBuySelected = null; // baseProduct currently open in the Quick Buy entry screen, or null for the search/pick list
@@ -1573,17 +1574,25 @@ function shoppingStatusChip(status){
 }
 
 // Shared label + chip for one purchase line, used everywhere a purchase shows up (Shopping List's buy
-// cell, Quick Buy). Pending (not yet received — see isReceived) shows what was ORDERED, styled to look
-// clearly outstanding rather than done, with "cost pending" when the price genuinely isn't known yet
-// (e.g. herbs invoiced later); received shows the ACTUAL received figures, styled as complete.
-function purchaseLineChip(e){
+// cell, Quick Buy, Shopping List Archive). Pending (not yet received — see isReceived) shows what was
+// ORDERED, styled to look clearly outstanding rather than done, with "cost pending" when the price
+// genuinely isn't known yet (e.g. herbs invoiced later); received shows the ACTUAL received figures,
+// styled as complete. opts.showWho (Archive only — the day-to-day views are busy enough already, and
+// "who" is right there in Purchase Costs/Receiving for them) appends who logged the order and, once
+// received, who confirmed it — Shane's ask, so a past day's record shows both without another tab.
+function purchaseLineChip(e, opts){
+  opts = opts || {};
   if(isNotReceived(e)) return chip("✕ Not received" + (e.notReceivedReason ? ": " + e.notReceivedReason : ""), "critical");
   const received = isReceived(e);
   const qty = received ? e.receivedQty : e.qty;
   const cost = received ? e.receivedCost : e.cost;
   const hasQty = qty!==undefined && qty!==null && qty!=="";
   const hasCost = cost!==undefined && cost!==null && cost!=="";
-  const core = (hasQty ? fmtNum(qty)+" @ " : "") + (hasCost ? money(cost) : "cost pending") + (e.supplier ? " (" + esc(e.supplier) + ")" : "");
+  let core = (hasQty ? fmtNum(qty)+" @ " : "") + (hasCost ? money(cost) : "cost pending") + (e.supplier ? " (" + esc(e.supplier) + ")" : "");
+  if(opts.showWho){
+    if(e.loggedBy) core += " — logged by " + esc(e.loggedBy);
+    if(received && e.receivedBy) core += ", received by " + esc(e.receivedBy);
+  }
   return received ? chip("✓ " + core, "good") : chip("📦 Ordered: " + core, "warn");
 }
 function csvParseLine(line){
@@ -2033,10 +2042,15 @@ function renderShoppingArchive(){
     bodyHtml = `<div class="empty">Loading…</div>`;
   } else {
     const hasNum = v=> v!==undefined && v!==null && v!=="";
-    const tableRows = shoppingArchiveRows.map(r=>{
+    const search = shoppingArchiveSearch.trim().toLowerCase();
+    const shownRows = search ? shoppingArchiveRows.filter(r=> (r.baseProduct||"").toLowerCase().includes(search)) : shoppingArchiveRows;
+    const tableRows = shownRows.map(r=>{
       const purchases = purchaseEntriesForDate(r.baseProduct, shoppingArchiveDate);
       const issue = unableEntryForDate(r.baseProduct, shoppingArchiveDate);
-      const parts = purchases.map(e=> purchaseLineChip(e));
+      // showWho:true — unlike the live Shopping List/Quick Buy buy-cell, a past day's record here is
+      // the point of the Archive, so who logged the order and who confirmed it goes right on the chip
+      // instead of sending someone to Purchase Costs/Receiving to look it up.
+      const parts = purchases.map(e=> purchaseLineChip(e, {showWho:true}));
       if(issue) parts.push(issueChipHtml(issue));
       return `
       <tr>
@@ -2053,11 +2067,11 @@ function renderShoppingArchive(){
     }).join("");
     bodyHtml = `
     <div class="card">
-      <div class="cardhead"><div><h3>${esc(shoppingArchiveDate)}</h3><div class="desc">${shoppingArchiveRows.length} product(s) — exactly as the Shopping List stood that evening, not recalculated with today's settings.</div></div></div>
+      <div class="cardhead"><div><h3>${esc(shoppingArchiveDate)}</h3><div class="desc">${search ? `${shownRows.length} of ${shoppingArchiveRows.length}` : shoppingArchiveRows.length} product(s) — exactly as the Shopping List stood that evening, not recalculated with today's settings.</div></div></div>
       <div class="cardbody" style="padding:0;">
         <div class="tablewrap" style="border:none;border-radius:0;max-height:640px;overflow-y:auto;"><table>
           <thead><tr><th>Base product</th><th>Category</th><th>Status</th><th class="num">Stock that day</th><th>Counted on</th><th class="num">Holding target</th><th class="num">Suggested buy</th><th>Unit</th><th>Purchases that day</th></tr></thead>
-          <tbody>${tableRows || `<tr><td colspan="9" class="empty">No products recorded for this date.</td></tr>`}</tbody>
+          <tbody>${tableRows || `<tr><td colspan="9" class="empty">${search ? `No products match "${esc(shoppingArchiveSearch)}".` : "No products recorded for this date."}</td></tr>`}</tbody>
         </table></div>
       </div>
     </div>`;
@@ -2067,6 +2081,7 @@ function renderShoppingArchive(){
     <div class="pagehead">
       <div><h2>Shopping List Archive</h2><p>A day-by-day record of the Shopping List, captured automatically once a day — exactly what it said at the time, including what was bought or marked unable to purchase, so you can look back at any past date.</p></div>
       <div class="actions">
+        <div class="field" style="min-width:220px;"><label>Search</label><input type="text" id="shoppingArchiveSearchInput" placeholder="Base product…" value="${esc(shoppingArchiveSearch)}"></div>
         <div class="field" style="min-width:200px;"><label>Date</label><select id="shoppingArchiveDateSel">${dateOptions}</select></div>
       </div>
     </div>
@@ -3781,6 +3796,13 @@ function wireTabEvents(){
   }
 
   if(currentTab==="shoppingarchive"){
+    const archiveSearchInput = document.getElementById("shoppingArchiveSearchInput");
+    if(archiveSearchInput){
+      archiveSearchInput.addEventListener("input", (e)=>{
+        shoppingArchiveSearch = e.target.value;
+        render();
+      });
+    }
     const dateSel = document.getElementById("shoppingArchiveDateSel");
     if(dateSel) dateSel.addEventListener("change", (e)=>{
       shoppingArchiveDate = e.target.value;
