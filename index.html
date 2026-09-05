@@ -200,7 +200,17 @@
   .loginmark{width:44px;height:44px;border-radius:10px;background:var(--accent);color:var(--accent-ink);
     display:flex;align-items:center;justify-content:center;font-family:"Fraunces",serif;font-weight:600;font-size:20px;margin:0 auto 14px;}
   .loginbox h2{font-size:20px; margin-bottom:4px;}
-  .loginbox input{text-align:center;}
+  /* Both fields share one box spec (size, border, radius, background) so Name and PIN read as a matched
+     pair — Shane's ask, after the two ended up visibly different sizes when each had its own one-off
+     inline style. PIN keeps its own letter-spacing via .login-pin rather than an inline style, so nothing
+     drifts out of sync with Name again. */
+  .loginbox input{
+    display:block; width:100%; box-sizing:border-box; text-align:center; font-size:17px;
+    padding:14px; margin-top:12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--surface-2); color:var(--ink);
+  }
+  .loginbox input.login-pin{letter-spacing:6px;}
+  .loginbox input:focus-visible{outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent);}
 
   /* First-load screen — shown the moment the page opens, before the data fetch resolves */
   .loadwrap{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;}
@@ -1499,7 +1509,7 @@ function renderLoading(){
     <div class="loadwrap">
       <div class="loadscene">
         <div class="loadring"><div class="loadmark">DF</div></div>
-        <h2>Daily Fruit</h2>
+        <h2>Daily Fruit - Procurement</h2>
         <p class="loadstatus">Loading the latest data<span class="loaddots"><span>.</span><span>.</span><span>.</span></span></p>
       </div>
     </div>`;
@@ -1510,7 +1520,7 @@ function renderLoadError(message){
     <div class="loginwrap">
       <div class="loginbox">
         <div class="loginmark">DF</div>
-        <h2>Daily Fruit</h2>
+        <h2>Daily Fruit - Procurement</h2>
         <p class="helptext" style="color:var(--critical);">Couldn't load the latest data.</p>
         <p class="helptext">${esc(message || "Unknown error")}</p>
         <button class="btn primary" id="retryLoadBtn" style="width:100%;margin-top:14px;padding:13px;font-size:15px;">Try again</button>
@@ -1551,7 +1561,7 @@ function renderLogin(){
       <div class="loginwrap">
         <div class="loginbox">
           <div class="loginmark">DF</div>
-          <h2>Daily Fruit</h2>
+          <h2>Daily Fruit - Procurement</h2>
           <p class="helptext">No users set up yet — ask the owner to add one.</p>
         </div>
       </div>`;
@@ -1560,12 +1570,11 @@ function renderLogin(){
     <div class="loginwrap">
       <div class="loginbox">
         <div class="loginmark">DF</div>
-        <h2>Daily Fruit</h2>
+        <h2>Daily Fruit - Procurement</h2>
         <p class="helptext">Enter your name and PIN to log in.</p>
         <input type="text" id="loginName" placeholder="Name" autocomplete="off" autofocus ${loginBusy?"disabled":""}
-          value="${esc(loginNameInput)}" style="font-size:16px;padding:13px;margin-top:14px;">
-        <input type="password" inputmode="numeric" pattern="[0-9]*" id="loginPin" placeholder="PIN" ${loginBusy?"disabled":""}
-          style="font-size:22px;padding:14px;letter-spacing:6px;margin-top:10px;">
+          value="${esc(loginNameInput)}">
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="loginPin" class="login-pin" placeholder="PIN" ${loginBusy?"disabled":""}>
         ${loginError ? `<div class="helptext" style="color:var(--critical);margin-top:8px;">${esc(loginError)}</div>` : ""}
         <button class="btn primary" id="loginSubmit" ${loginBusy?"disabled":""} style="width:100%;margin-top:14px;padding:13px;font-size:15px;">${loginBusy?"Checking for updates…":"Log in"}</button>
       </div>
