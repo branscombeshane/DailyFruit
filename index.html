@@ -996,6 +996,14 @@ function receivingDiscrepancy(p){
   return {qtyDiff, costDiff};
 }
 
+// Shane, 2026-09: printer isn't hooked up yet, so the automatic print-on-confirm is off for now — it
+// was popping the print dialog on every single receive, which got annoying with no printer to catch it.
+// The manual "🖨 Print slip" button (data-print-slip, on every Recently received row) is NOT gated by
+// this — it always works, regardless of this flag. Flip this back to true once the printer is connected
+// and the two auto-print call sites (data-receive-tick and logDirectReceipt, in wire_events.js) will
+// resume printing automatically again — no other change needed.
+const AUTO_PRINT_RECEIVING_SLIP = false;
+
 // Prints a physical goods-received slip for one confirmed delivery — Shane's ask. Looks the record up
 // fresh by id (rather than taking a reference) so this works identically whether it's called right after
 // a confirm (see data-receive-tick) or later from the "🖨 Print slip" button on an already-received row.
@@ -4011,7 +4019,9 @@ function wireTabEvents(){
         // already-received line (that's what the row's own "🖨 Print slip" button is for, on demand).
         // Printed synchronously here, before the save round-trip above resolves, so the paper slip
         // reflects the physical count immediately rather than waiting on network timing.
-        if(!wasAlreadyReceived) printReceivingSlip(id);
+        // Gated behind AUTO_PRINT_RECEIVING_SLIP (currently off — printer not connected yet, see that
+        // flag's comment); the manual "🖨 Print slip" button keeps working regardless.
+        if(AUTO_PRINT_RECEIVING_SLIP && !wasAlreadyReceived) printReceivingSlip(id);
       });
     });
     // "Not received" on a still-pending order — the other resolution besides actually confirming
@@ -4124,8 +4134,8 @@ function wireTabEvents(){
         DATA.purchaseCosts.push(entry);
         persistPurchaseAction({action:"logPurchase", entry}, "Logged " + qtyVal + " " + bp + " received (no order on file)");
         // Also a delivery being confirmed for the first time (just without a prior order on file) — same
-        // auto-print as the normal Pending delivery -> Received flow above.
-        printReceivingSlip(entry.id);
+        // auto-print as the normal Pending delivery -> Received flow above, same AUTO_PRINT_RECEIVING_SLIP gate.
+        if(AUTO_PRINT_RECEIVING_SLIP) printReceivingSlip(entry.id);
       });
     }
   }
